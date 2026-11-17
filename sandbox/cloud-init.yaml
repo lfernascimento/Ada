@@ -1,0 +1,11 @@
+#cloud-config
+package_update: true
+packages:
+  - python3
+  - nodejs
+  - npm
+  - iptables
+runcmd:
+  - [useradd, --system, --create-home, --shell, /usr/sbin/nologin, ada-sandbox]
+  - [iptables, -A, OUTPUT, -m, owner, --uid-owner, ada-sandbox, -j, REJECT]
+  - [ip6tables, -A, OUTPUT, -m, owner, --uid-owner, ada-sandbox, -j, REJECT]

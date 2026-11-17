@@ -1,0 +1,47 @@
+/* Ada: linho, violeta profundo e verde botânico. */
+:root{color-scheme:light;--ada-ink:#301934;--ada-green:#355E3B;--ada-paper:#f6f1e6;--ada-surface:#fcf9f2;--ada-sidebar:#eee8da;--ada-line:#d8d0c4;--ada-muted:#655c61;color:var(--ada-ink);background:var(--ada-paper)}
+body,.app,.workspace,.setup-page,.connections-page{background:var(--ada-paper);color:var(--ada-ink)}
+.sidebar{background:var(--ada-sidebar);border-color:var(--ada-line)}
+.brand .logo,.setup-brand span{color:var(--ada-ink)}
+.ada-brand-symbol{width:46px;height:46px}.setup-brand img{width:42px;height:42px}
+.brand{gap:8px}.brand>span,.side-heading,.sidehint,.sidebar-footer small,.sidefoot{color:#685f62}
+.sidebar-footer,.topbar,.tabs,.draft-bar{border-color:var(--ada-line)}
+.footer-mark{background:#e1d8cb;color:var(--ada-ink)}
+.sidebar-footer>span,.crumb,.topbar{color:#655d60}
+.side-link{color:var(--ada-ink)}.side-link:hover,.side-link.active{background:#e5dbe2;color:var(--ada-ink)}
+.side-icon,.active-dot{color:var(--ada-green)}.active-dot{background:var(--ada-green)}
+.threads button{color:#71676b}.threads .chosen{color:var(--ada-ink)}
+.crumb span,.eyebrow,.setup-kicker,.setup-progress span,.draft-bar span{color:var(--ada-green)}
+.outline{color:var(--ada-ink);border-color:#cbbdc5;background:transparent}.outline:hover{background:#eae1e8}
+.conversation-head h1,.setup-content h2,.connections-content h1,.draft-panel h2,.welcome-panel h2,.empty-state h2{color:var(--ada-ink)}
+.conversation-head h1 em,.setup-content h2 em,.connections-content h1 em,.welcome-panel h2 em{color:var(--ada-green)}
+.conversation-head>p,.conversation-head .agent-title p,.setup-lead,.connections-lead,.draft-panel>p,.welcome-panel>p{color:var(--ada-muted)}
+.details{background:#f1ebdf;border-color:var(--ada-line)}
+.tabs button{color:#6a6165}.tabs button.on{color:var(--ada-ink)}.tabs button.on:after{background:var(--ada-green)}
+.draft-bar{color:#62595d}.draft-steps,.draft-steps>div,.mini-note,.proposal-rule,.version,.review-block,.meta-row,.run-row,.approval{border-color:var(--ada-line)}
+.draft-steps>div>span,.draft-steps i,.mini-note>span{color:var(--ada-green)}.draft-steps b,.mini-note b{color:var(--ada-ink)}
+.draft-steps small,.mini-note small,.footnote,.sidehint{color:#6c6266}
+.draft-character img,.ada-avatar-welcome,.setup-hero{filter:drop-shadow(0 10px 16px #3019341c)}
+.composer{background:var(--ada-surface);border-color:#cec2c5}.composer textarea{color:var(--ada-ink)}.composer textarea::placeholder{color:#796e74}.composer button,.primary,.setup-primary{background:var(--ada-ink);border-color:var(--ada-ink);color:#fffaf1}
+.message-label{color:#6a6267}.bubble{background:var(--ada-surface);border-color:var(--ada-line);color:var(--ada-ink)}.user .bubble{background:#ece1e9;border-color:#d9cbd6;color:var(--ada-ink)}
+.proposal,.panel-card,.connection-card{background:var(--ada-surface);border-color:var(--ada-line);color:var(--ada-ink)}
+.proposal p,.proposal li,.description,.review-block p,.instruction{color:#554d50}.proposal small,.proposal-rule strong,.review-heading{color:#5e5660}
+.profile h2,.proposal h2,.card-title h3,.connection-card h2{color:var(--ada-ink)}.profile p,.muted,.card-empty,.connection-card p,.connection-card small,.item small,.version small,.run-row small,.event small{color:#6e6467}
+.status,.connection-status.connected{background:#e0ebdd;color:var(--ada-green)}.connection-status{background:#ece4e4;color:#645c60}
+.item,.run-row{color:var(--ada-ink)}.item-icon,.connection-icon{background:#f1eae3;border-color:#d9cdd2;color:var(--ada-green)}
+.tag,.link,.connection-link{color:var(--ada-green)}.meta-row,.card-title>span{color:#71666c}.meta-row b{color:var(--ada-ink)}
+.approval pre{background:#f1eae3;color:var(--ada-ink)}.error,.setup-error{color:#963c39}.loading{color:var(--ada-green)}
+.setup-header{border-color:var(--ada-line)}.setup-progress,.setup-back,.setup-label{color:#62575d}.setup-glow{background:radial-gradient(circle,#355e3b17,transparent 70%)}
+.setup-preview-caption p,.setup-hint{color:#655b60}.setup-preview-character{color:var(--ada-green)}
+.setup-input,.setup-rules,.edit-fields input,.edit-fields select,.edit-fields textarea{background:var(--ada-surface);color:var(--ada-ink);border-color:#ccc0c4}
+.setup-input::placeholder{color:#82787d}.character-option{background:var(--ada-surface);color:var(--ada-ink);border-color:#d8cdd1}.character-option:hover{background:#f2e9ef}.character-option.selected{background:#ede2ec;border-color:var(--ada-ink)}.character-check{color:var(--ada-green)}
+.connections-note{background:#eee8df;border-color:var(--ada-green);color:#574e52}.connection-message,.connection-muted{color:#6a6064}
+.creation-identity-chip{background:var(--ada-surface);border-color:var(--ada-line);color:var(--ada-ink)}.creation-identity-chip small{color:#6b6266}.creation-identity-chip i{color:var(--ada-green)}
+button:focus-visible,textarea:focus-visible,input:focus-visible,select:focus-visible,.setup-input:focus-visible,.setup-rules:focus-visible{outline-color:var(--ada-green)}
+
+/* Cor solicitada para a chamada de criação; NeverMind Bauhaus identifica a marca. */
+@font-face{font-family:'NeverMind Bauhaus';src:url('/fonts/NeverMindBauhaus-Regular.ttf') format('truetype');font-style:normal;font-weight:400;font-display:swap}
+.brand .logo,.setup-brand span{font-family:'NeverMind Bauhaus',Inter,sans-serif;font-weight:400;letter-spacing:normal}
+.conversation-head .creation-title,.conversation-head .creation-title em{color:#856A00}
+/* Mantém o nome da marca e a assinatura alinhados. */
+.brand>span{white-space:nowrap;flex-shrink:0;letter-spacing:.1em;font-size:7px}

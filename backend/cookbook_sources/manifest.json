@@ -1,0 +1,9 @@
+{
+  "revision": "ce8b2629efe8b24048b127b4c79af1e9cbab93d4",
+  "files": [
+    "LICENSE",
+    "claude_agent_sdk/research_agent/agent.py",
+    "claude_agent_sdk/research_agent/architecture_diagram.md",
+    "claude_agent_sdk/hosting/server.py"
+  ]
+}

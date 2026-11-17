@@ -1,0 +1,16 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.db
+node_modules/
+dist/
+
+# Segredos e dados locais
+.env.*
+!.env.example
+*.db-*
+*.pem
+*.key
+*.crt
