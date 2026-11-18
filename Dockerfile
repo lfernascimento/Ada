@@ -10,6 +10,7 @@ WORKDIR /app
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt && useradd --uid 10001 --create-home ada
 COPY backend/ /app/backend/
+COPY sandbox/ /app/sandbox/
 COPY --from=frontend /build/dist /app/frontend/dist
 USER ada
 WORKDIR /app/backend

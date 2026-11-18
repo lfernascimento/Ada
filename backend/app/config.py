@@ -6,6 +6,7 @@ load_dotenv(ROOT / '.env')
 DB_PATH = Path(os.getenv('ADA_DB_PATH', ROOT / 'ada.db'))
 MODEL_BASE_URL = os.getenv('MODEL_BASE_URL', 'http://localhost:11434/v1').rstrip('/')
 MODEL_NAME = os.getenv('MODEL_NAME', '')
+LIGHT_MODEL = os.getenv('ADA_LIGHT_MODEL', '').strip()
 MODEL_API_KEY = os.getenv('MODEL_API_KEY', '')
 
 ANTHROPIC_WORKSPACE_ID = os.getenv('ANTHROPIC_WORKSPACE_ID', '')

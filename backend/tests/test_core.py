@@ -76,7 +76,11 @@ def test_delegation_plan_and_catalog(spec):
         assert client.post(f'/runs/{rid}/delegation-plan',json=plan).status_code==409
 
 
-def test_claude_sdk_gateway_in_chat_flow(spec, monkeypatch):
+@pytest.mark.parametrize('light,tier,expected_model',[
+    ('','main','test-model'),('','light','test-model'),
+    ('test-light','light','test-light'),('test-light','main','test-model'),
+])
+def test_claude_sdk_gateway_in_chat_flow(spec, monkeypatch,light,tier,expected_model):
     mock_sdk_client_for_query(monkeypatch)
     import json
     import claude_agent_sdk
@@ -88,11 +92,12 @@ def test_claude_sdk_gateway_in_chat_flow(spec, monkeypatch):
     proposal=json.dumps({'type':'proposal','text':None,'spec':spec.model_dump(),'rationale':'Adequado.'})
     async def fake_query(*, prompt, options):
         calls.append((prompt,options))
-        text = proposal if len(calls)==1 else ('{\"tasks\":[{\"capability\":\"code_review\",\"assignment\":\"Revisar trecho enviado\"}]}' if len(calls)==2 else 'Resposta pelo SDK.')
+        text = proposal if len(calls)==1 else (json.dumps({'tasks':[{'capability':'code_review','assignment':'Revisar trecho enviado','model_tier':tier}]}) if len(calls)==2 else 'Resposta pelo SDK.')
         yield ResultMessage(subtype='success',duration_ms=1,duration_api_ms=1,is_error=False,num_turns=1,session_id='test',result=text,usage={'input_tokens':10,'output_tokens':5},total_cost_usd=0.001)
     monkeypatch.setattr(claude_agent_sdk,'query',fake_query)
     monkeypatch.setattr(config,'MODEL_API_KEY','test-key')
     monkeypatch.setattr(config,'MODEL_NAME','test-model')
+    monkeypatch.setattr(config,'LIGHT_MODEL',light)
     monkeypatch.setattr(main,'gateway',ClaudeAgentGateway())
     with TestClient(main.app) as client:
         result=client.post('/create/messages',json={'messages':[{'role':'user','content':'Crie um agente'}]})
@@ -110,6 +115,9 @@ def test_claude_sdk_gateway_in_chat_flow(spec, monkeypatch):
         assert client.get(f'/agents/{aid}/conversations').json()[0]['title']=='Oi'
     assert all(opts.tools==[] and opts.allowed_tools==[] and opts.setting_sources==[] for _,opts in calls[:2])
     assert calls[2][1].tools==['Agent','WebSearch'] and 'code_review_1' in calls[2][1].agents
+    assert calls[2][1].agents['code_review_1'].model==expected_model
+    assert all(opts.model=='test-model' for _,opts in calls)
+    assert all(opts.env['ANTHROPIC_API_KEY']=='test-key' for _,opts in calls)
     assert set(calls[2][1].agents['code_review_1'].tools)=={'mcp__ada__buscar_documentos','mcp__ada__ler_pagina','mcp__ada__consultar_notas','mcp__ada__consultar_historico'}
     assert all(opts.max_budget_usd>0 for _,opts in calls)
     assert 'Crie um agente' in calls[0][0] and 'Oi' in calls[1][0] and len(calls)==3
@@ -945,6 +953,8 @@ def test_native_delegation_hooks_limit_and_audit(spec,monkeypatch):
             hook=next(h.hooks[0] for h in options.hooks['PreToolUse'] if h.matcher=='^(Agent|Task)$')
             bad=await hook({'tool_input':{'subagent_type':'unknown'}},'bad',None)
             assert bad['hookSpecificOutput']['permissionDecision']=='deny'
+            wrong_model=await hook({'tool_input':{'subagent_type':'observability_1','model':'unconfigured-model'}},'wrong-model',None)
+            assert wrong_model['hookSpecificOutput']['permissionDecision']=='deny'
             for i in range(config.MAX_SUBAGENTS):assert await hook({'tool_input':{'subagent_type':'observability_1'}},str(i),None)=={}
             denied=await hook({'tool_input':{'subagent_type':'observability_1'}},'extra',None)
             assert denied['hookSpecificOutput']['permissionDecision']=='deny'

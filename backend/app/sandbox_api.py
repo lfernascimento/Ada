@@ -1,5 +1,5 @@
 """Execução manual explícita em sandbox Docker local; não é executor remoto."""
-import asyncio,shutil,subprocess
+import asyncio,shutil,subprocess,os
 from fastapi import APIRouter,Depends,HTTPException
 from .connections import local_only
 from .tools.sandbox import PythonSandboxArgs,SandboxError,execute_python
@@ -17,7 +17,11 @@ def inspect_docker():
     except (OSError,subprocess.SubprocessError): return {'docker':True,'engine':False,'image':False,'message':'Não foi possível verificar o Docker.'}
 
 @router.get('/status')
-async def status(): return await asyncio.to_thread(inspect_docker)
+async def status():
+    if os.getenv('ADA_SANDBOX_BACKEND','docker').strip().lower()=='render':
+        from .tools.render_sandbox import inspect_render
+        return inspect_render()
+    return await asyncio.to_thread(inspect_docker)
 
 @router.post('/execute')
 async def execute(body:PythonSandboxArgs):

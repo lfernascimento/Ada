@@ -13,6 +13,10 @@ class PythonSandboxArgs(BaseModel):
 class SandboxError(Exception): pass
 
 def execute_python(args:PythonSandboxArgs):
+    if os.getenv('ADA_SANDBOX_BACKEND','docker').strip().lower()=='render':
+        from .render_sandbox import execute_python as remote_execute
+        try:return remote_execute(args.codigo)
+        except RuntimeError as exc:raise SandboxError(str(exc)) from None
     docker=shutil.which('docker')
     if not docker: raise SandboxError('Docker não está instalado ou não está no PATH.')
     # No implicit download; installation and image provenance are user-controlled.

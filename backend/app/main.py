@@ -114,6 +114,11 @@ class ChatRequest(BaseModel):
     content: str = Field(min_length=1,max_length=12000)
 @app.get('/health')
 def health(): return {'status':'ok'}
+
+@app.get('/installation')
+def installation():
+    import os
+    return {'mode':os.getenv('ADA_DEPLOYMENT_MODE','local')}
 @app.get('/agents')
 def agents(): return repo.list_agents()
 @app.post('/agents')

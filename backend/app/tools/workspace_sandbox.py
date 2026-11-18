@@ -107,6 +107,9 @@ def open_workspace(archive):
     backend=os.getenv('ADA_SANDBOX_BACKEND','docker').strip().lower()
     if backend=='multipass':return MultipassWorkspace(archive)
     if backend=='docker':return DockerWorkspace(archive)
+    if backend=='render':
+        from .render_sandbox import RenderWorkspace
+        return RenderWorkspace(archive)
     raise RuntimeError('Executor de sandbox desconhecido.')
 
 def _multipass(files,archive):
@@ -118,6 +121,8 @@ def validate_workspace(files,archive=None):
         backend=os.getenv('ADA_SANDBOX_BACKEND','docker').strip().lower()
         if backend=='docker':return _docker(files,archive)
         if backend=='multipass':return _multipass(files,archive)
+        if backend=='render':
+            with open_workspace(archive) as workspace:return workspace.validate(files)
         return {'status':'unavailable','message':'Executor de sandbox desconhecido.','checks':[]}
     except RuntimeError as exc:
         return {'status':'unavailable','message':str(exc),'checks':[]}

@@ -165,8 +165,11 @@ class ClaudeAgentGateway(ModelGateway):
                         kind=(data.get('tool_input') or {}).get('subagent_type')
                         if kind not in definitions or native_count>=MAX_SUBAGENTS:
                             return {'hookSpecificOutput':{'hookEventName':'PreToolUse','permissionDecision':'deny','permissionDecisionReason':'Especialista não autorizado ou limite atingido.'}}
+                        requested_model=(data.get('tool_input') or {}).get('model')
+                        if requested_model and requested_model!=definitions[kind].model:
+                            return {'hookSpecificOutput':{'hookEventName':'PreToolUse','permissionDecision':'deny','permissionDecisionReason':'Use o modelo definido no plano para este especialista.'}}
                         native_count+=1
-                        record_event(native[0],'subagent_started',{'label':kind,'tool_use_id':tool_id,'native':True})
+                        record_event(native[0],'subagent_started',{'label':kind,'tool_use_id':tool_id,'native':True,'model':definitions[kind].model})
                         return {}
                     async def delegated_done(data,tool_id,context):
                         record_event(native[0],'subagent_completed',{'tool_use_id':tool_id,'native':True})
