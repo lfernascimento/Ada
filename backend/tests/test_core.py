@@ -1391,17 +1391,23 @@ def test_gemini_image_payload_and_reset(spec,monkeypatch):
         assert captured[0]['messages'][-1]['content'][1]['image_url']['url'].startswith('data:image/png;base64,')
     assert not active_images.get()
 
-def test_private_cloud_auth_origin_and_api_prefix(spec,monkeypatch):
+@pytest.mark.parametrize('password',['testpass','test-password-long-enough-123'])
+def test_private_cloud_auth_origin_and_api_prefix(spec,monkeypatch,password):
     from app import main
     from fastapi.testclient import TestClient
-    monkeypatch.setenv('ADA_DEPLOYMENT_MODE','private_cloud');monkeypatch.setenv('ADA_PUBLIC_ORIGIN','https://ada.example');monkeypatch.setenv('ADA_ACCESS_PASSWORD','test-password-long-enough-123');monkeypatch.setenv('ADA_DATABASE_BACKEND','postgres')
+    monkeypatch.setenv('ADA_DEPLOYMENT_MODE','private_cloud');monkeypatch.setenv('ADA_PUBLIC_ORIGIN','https://ada.example');monkeypatch.setenv('ADA_ACCESS_PASSWORD',password);monkeypatch.setenv('ADA_DATABASE_BACKEND','postgres')
     with TestClient(main.app,base_url='https://ada.example') as client:
         assert client.get('/api/agents').status_code==401
         assert client.get('/health').status_code==200
         assert client.get('/api/agents',auth=('ada','wrong')).status_code==401
-        assert client.get('/api/agents',auth=('ada','test-password-long-enough-123')).status_code==200
-        assert client.post('/api/agents',json=spec.model_dump(),auth=('ada','test-password-long-enough-123'),headers={'Origin':'https://evil.example'}).status_code==403
-        assert client.get('/api/agents',auth=('ada','test-password-long-enough-123'),headers={'Host':'other.example'}).status_code==403
+        assert client.get('/api/agents',auth=('ada',password)).status_code==200
+        assert client.get('/api/connections').status_code==401
+        assert client.get('/api/connections',auth=('ada',password)).status_code==200
+        assert client.get('/api/connections',auth=('ada',password),headers={'Origin':'https://evil.example'}).status_code==403
+        assert client.post('/api/agents',json=spec.model_dump(),auth=('ada',password),headers={'Origin':'https://evil.example'}).status_code==403
+        assert client.get('/api/agents',auth=('ada',password),headers={'Host':'other.example'}).status_code==403
+        monkeypatch.setenv('ADA_ACCESS_PASSWORD','short77')
+        assert client.get('/api/agents',auth=('ada','short77')).status_code==503
     monkeypatch.delenv('ADA_ACCESS_PASSWORD')
     with TestClient(main.app,base_url='https://ada.example') as client:assert client.get('/api/agents').status_code==503
 

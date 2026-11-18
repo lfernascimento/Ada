@@ -8,6 +8,16 @@ from pydantic import BaseModel, Field
 from .config import ROOT
 
 async def local_only(request:Request):
+    if os.getenv('ADA_DEPLOYMENT_MODE','local') == 'private_cloud':
+        from urllib.parse import urlsplit
+        origin=os.getenv('ADA_PUBLIC_ORIGIN','').rstrip('/')
+        parsed=urlsplit(origin)
+        if parsed.scheme!='https' or not parsed.hostname or request.url.netloc!=parsed.netloc:
+            raise HTTPException(403,'Host não autorizado.')
+        if request.headers.get('origin') and request.headers['origin']!=origin:
+            raise HTTPException(403,'Origem não autorizada.')
+        # Authentication and cross-site navigation checks are enforced by LocalBoundary.
+        return
     host=request.url.hostname
     if host not in ('localhost','127.0.0.1','::1'): raise HTTPException(403,'Acesso local necessário.')
     origin=request.headers.get('origin')

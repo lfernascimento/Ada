@@ -26,7 +26,7 @@ def inspect(values, cloud=False):
         add('Modo privado hospedado', values.get('ADA_DEPLOYMENT_MODE') == 'private_cloud')
         add('Origem HTTPS sem caminho', valid_origin)
         add('Retorno OAuth na mesma origem', valid_origin and (values.get('ADA_OAUTH_CALLBACK_BASE') or '').rstrip('/') == origin)
-        add('Autenticação privada configurada', bool(values.get('ADA_ACCESS_USER', 'ada')) and len(values.get('ADA_ACCESS_PASSWORD') or '') >= 24)
+        add('Autenticação privada configurada', bool(values.get('ADA_ACCESS_USER', 'ada')) and len(values.get('ADA_ACCESS_PASSWORD') or '') >= 8)
         add('Banco PostgreSQL selecionado', values.get('ADA_DATABASE_BACKEND') == 'postgres')
         add('Conexão PostgreSQL presente', bool(values.get('SUPABASE_DATABASE_URL')))
         add('Certificado CA presente neste ambiente', Path(values.get('SUPABASE_DB_CA_CERT') or '__missing__').is_file())

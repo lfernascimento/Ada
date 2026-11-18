@@ -34,7 +34,7 @@ async def private_cloud(request,call_next):
     parsed=urlsplit(origin)
     password=os.getenv('ADA_ACCESS_PASSWORD','')
     username=os.getenv('ADA_ACCESS_USER','ada')
-    if parsed.scheme!='https' or not parsed.hostname or parsed.path or parsed.query or parsed.fragment or parsed.username or len(password)<24 or os.getenv('ADA_DATABASE_BACKEND')!='postgres':
+    if parsed.scheme!='https' or not parsed.hostname or parsed.path or parsed.query or parsed.fragment or parsed.username or len(password)<8 or os.getenv('ADA_DATABASE_BACKEND')!='postgres':
         return JSONResponse({'detail':'Instalação privada ainda não configurada.'},status_code=503)
     if request.url.netloc!=parsed.netloc:return JSONResponse({'detail':'Host não autorizado.'},status_code=403)
     if request.url.path=='/health' and request.method=='GET':return JSONResponse({'status':'ok'})
