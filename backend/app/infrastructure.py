@@ -85,9 +85,11 @@ async def upload_document(agent_id:int,request:Request,name:str):
         if len(buf)>5_000_000: raise HTTPException(413,'Documento maior que 5 MB.')
     try:
         if name.lower().endswith('.pdf'):
-            from pypdf import PdfReader
-            from io import BytesIO
-            reader=PdfReader(BytesIO(buf)); text='\n'.join((page.extract_text() or '') for page in reader.pages)
+            import os,sys,subprocess
+            env={k:v for k,v in os.environ.items() if k.upper() in ('SYSTEMROOT','WINDIR','PATH','TEMP','TMP')}
+            result=await asyncio.to_thread(subprocess.run,[sys.executable,'-I',str(Path(__file__).with_name('pdf_worker.py'))],input=bytes(buf),stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=15,check=False,env=env)
+            if result.returncode:raise ValueError('PDF inválido ou excede limites de extração.')
+            text=json.loads(result.stdout)['text']
         else: text=buf.decode('utf-8-sig')
     except ImportError: raise HTTPException(503,'Leitura de PDF precisa da biblioteca pypdf.')
     except Exception: raise HTTPException(400,'Não foi possível ler o documento.')
@@ -153,6 +155,11 @@ async def request_tool(run_id:int,body:ToolRequest):
             approval_id=insert_id(c,'INSERT INTO approvals(run_id,tool,payload_json) VALUES(?,?,?)',(run_id,body.tool,json.dumps(payload,ensure_ascii=False)))
             c.execute("UPDATE runs SET status='waiting_approval',steps=steps+1 WHERE id=?",(run_id,)); emit(c,run_id,'approval_requested',{'approval_id':approval_id,'tool':body.tool,'payload':payload})
         return {'status':'waiting_approval','approval_id':approval_id,'payload':payload}
+    with connect() as c:
+        begin_write(c); current=find_run(c,run_id)
+        if current['status'] not in ('draft','running') or current['steps']>=spec.limits.max_steps:
+            raise HTTPException(409,'Limite de passos ou estado da execução impede a chamada.')
+        c.execute('UPDATE runs SET steps=steps+1 WHERE id=?',(run_id,))
     try:
         result=await asyncio.wait_for(asyncio.to_thread(read_url,args) if body.tool=='ler_url' else asyncio.to_thread(search_documents,args,run['agent_id']),timeout=20)
     except (ToolError, asyncio.TimeoutError) as e: raise HTTPException(400, str(e) or 'Tempo limite da ferramenta atingido.')
@@ -160,7 +167,7 @@ async def request_tool(run_id:int,body:ToolRequest):
         begin_write(c)
         current=find_run(c,run_id)
         if current['status'] not in ('draft','running'): raise HTTPException(409,'Execução indisponível.')
-        c.execute('UPDATE runs SET steps=steps+1 WHERE id=?',(run_id,)); emit(c,run_id,'tool_result',{'tool':body.tool,'result':result})
+        emit(c,run_id,'tool_result',{'tool':body.tool,'result':result})
     return {'ok':True,'data':result}
 
 @router.post('/approvals/{approval_id}/decision')
@@ -204,7 +211,7 @@ async def stream_events(run_id:int,request:Request,after:int=0):
             for row in rows:
                 cursor=row['seq']; data=json.dumps({'seq':row['seq'],'type':row['type'],'payload':json.loads(row['payload_json'])},ensure_ascii=False)
                 yield f'id: {cursor}\nevent: {row["type"]}\ndata: {data}\n\n'
-            if current['status'] in ('succeeded','failed','cancelled'): break
+            if current['status'] in ('completed','succeeded','failed','cancelled'): break
             yield ': aguardando\n\n'
             await asyncio.sleep(2)
     return StreamingResponse(events(),media_type='text/event-stream',headers={'Cache-Control':'no-cache','X-Accel-Buffering':'no'})

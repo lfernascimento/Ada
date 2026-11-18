@@ -9,10 +9,10 @@ from .db import connect
 router = APIRouter()
 
 @router.get('/agents/{agent_id}/conversations/{cid}/export')
-def export_last_response(agent_id: int, cid: int, format: str='md'):
+def export_last_response(agent_id: int, cid: int, format: str='md', message_id:int|None=None):
     if format not in ('md','docx','pdf','pptx','xlsx'): raise HTTPException(400,'Formato não suportado.')
     with connect() as c:
-        row=c.execute("SELECT m.content FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.id=? AND c.agent_id=? AND m.role='assistant' ORDER BY m.id DESC LIMIT 1",(cid,agent_id)).fetchone()
+        row=c.execute("SELECT m.content FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.id=? AND c.agent_id=? AND m.role='assistant' AND (? IS NULL OR m.id=?) ORDER BY m.id DESC LIMIT 1",(cid,agent_id,message_id,message_id)).fetchone()
     if not row: raise HTTPException(404,'Nenhuma resposta encontrada.')
     content=row['content']
     if format=='md': data=content.encode('utf-8'); mime='text/markdown; charset=utf-8'
@@ -75,3 +75,24 @@ def export_last_response(agent_id: int, cid: int, format: str='md'):
             story.append(Paragraph(escape(line) if line else '&#160;',style)); story.append(Spacer(1,3))
         SimpleDocTemplate(out).build(story); data=out.getvalue(); mime='application/pdf'
     return Response(content=data,media_type=mime,headers={'Content-Disposition':f'attachment; filename="ada-documento.{format}"','X-Content-Type-Options':'nosniff'})
+
+
+def export_link(agent_id,cid,format):
+    if format not in ('md','docx','pdf','pptx','xlsx'):raise ValueError('Formato não suportado.')
+    with connect() as c:
+        row=c.execute("SELECT m.id FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.id=? AND c.agent_id=? AND m.role='assistant' AND m.content NOT LIKE 'Arquivo solicitado:%' ORDER BY m.id DESC LIMIT 1",(cid,agent_id)).fetchone()
+    if not row:raise ValueError('Escreva o conteúdo antes de solicitar o arquivo.')
+    # Validate generation now, not just when the user follows the link.
+    export_last_response(agent_id,cid,format,row['id'])
+    return f"Arquivo solicitado: [Baixar {format.upper()}](/api/agents/{agent_id}/conversations/{cid}/export?format={format}&message_id={row['id']})"
+
+def requested_export(agent_id,cid,text):
+    import re,unicodedata
+    normalized=''.join(c for c in unicodedata.normalize('NFKD',text.lower()) if not unicodedata.combining(c)).strip().rstrip('.!?')
+    # Only explicit export commands; mentions in research topics do not trigger files.
+    pattern=r'(?:por favor[, ]+)?(?:exporte|exportar|converta|converter|gere|gerar|salve|salvar|baixe|baixar) (?:a |o |essa |esse |esta |este |isso |um |uma )?(?:(?:ultima |ultimo )?(?:resposta|relatorio|conteudo|texto|arquivo|documento) )?(?:em |para |como )?(pdf|markdown|md|word|docx|slides|pptx|planilha|xlsx)(?: (?:dessa|desta|da ultima|desse|deste|do ultimo) (?:resposta|relatorio|texto|conteudo))?'
+    match=re.fullmatch(pattern,normalized)
+    if not match:return None
+    format={'markdown':'md','word':'docx','slides':'pptx','planilha':'xlsx'}.get(match[1],match[1])
+    try:return export_link(agent_id,cid,format)
+    except ValueError:return 'Ainda não há uma resposta para exportar. Peça o conteúdo primeiro e depois solicite o arquivo.'

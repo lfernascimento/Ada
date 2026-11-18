@@ -1,5 +1,5 @@
 """Run untrusted project tests inside the restricted container. No credentials or network."""
-import base64, io, json, os, pathlib, resource, subprocess, sys, tarfile, tempfile
+import base64, io, json, os, pathlib, resource, subprocess, sys, tarfile, tempfile, signal
 
 ROOT = pathlib.Path('/tmp/workspace')
 MAX_FILES = 5000
@@ -30,14 +30,18 @@ def unpack(data):
 
 def run(command):
     def limits():
+        resource.setrlimit(resource.RLIMIT_NPROC,(64,64))
         resource.setrlimit(resource.RLIMIT_FSIZE, (2 * 1024 * 1024, 2 * 1024 * 1024))
     with open('/tmp/test-output', 'wb') as output:
+        process=subprocess.Popen(command,cwd=ROOT,stdin=subprocess.DEVNULL,stdout=output,stderr=subprocess.STDOUT,start_new_session=True,preexec_fn=limits,
+            env={'PATH':'/usr/local/bin:/usr/bin:/bin','HOME':'/tmp','TMPDIR':'/tmp','CI':'1','PYTHONDONTWRITEBYTECODE':'1','npm_config_cache':'/tmp/npm-cache'})
         try:
-            process = subprocess.run(command, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT, timeout=45, preexec_fn=limits,
-                env={'PATH':'/usr/local/bin:/usr/bin:/bin','HOME':'/tmp','TMPDIR':'/tmp','CI':'1','PYTHONDONTWRITEBYTECODE':'1','npm_config_cache':'/tmp/npm-cache'})
-            status = 'passed' if process.returncode == 0 else 'failed'
-        except subprocess.TimeoutExpired:
-            status = 'failed'
+            status='passed' if process.wait(timeout=45)==0 else 'failed'
+        except subprocess.TimeoutExpired:status='failed'
+        finally:
+            try:os.killpg(process.pid,signal.SIGKILL)
+            except ProcessLookupError:pass
+            process.wait()
     text = pathlib.Path('/tmp/test-output').read_bytes()[:16000].decode('utf-8', errors='replace')
     return {'command':' '.join(command), 'status':status, 'output':text}
 

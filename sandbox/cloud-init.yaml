@@ -5,6 +5,7 @@ packages:
   - nodejs
   - npm
   - iptables
+  - procps
 runcmd:
   - [useradd, --system, --create-home, --shell, /usr/sbin/nologin, ada-sandbox]
   - [iptables, -A, OUTPUT, -m, owner, --uid-owner, ada-sandbox, -j, REJECT]

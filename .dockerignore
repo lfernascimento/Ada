@@ -1,0 +1,16 @@
+.git
+.env
+.env.*
+**/.env
+**/.env.*
+.venv
+**/__pycache__
+**/.pytest_cache
+**/node_modules
+**/dist
+*.db
+*.db-*
+*.crt
+*.pem
+*.key
+*.zip

@@ -17,3 +17,5 @@ SDK_TIMEOUT_SECONDS = int(os.getenv('ADA_SDK_TIMEOUT_SECONDS', '120'))
 TASK_BUDGET_USD = float(os.getenv('ADA_TASK_BUDGET_USD', '0.50'))
 
 MAX_SUBAGENTS = int(os.getenv('ADA_MAX_SUBAGENTS', '4'))
+
+MEMORY_AUTOMATIC = os.getenv('ADA_MEMORY_AUTOMATIC','true').lower()=='true'

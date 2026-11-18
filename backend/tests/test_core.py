@@ -11,6 +11,10 @@ def spec():
     return AgentSpec.model_validate(dict(name='Nina',purpose='Pesquisar',instructions=['Ser clara'],tools=['ler_url','salvar_relatorio'],autonomy_policy={'ler_url':'allowed','salvar_relatorio':'approval_required'},limits={'max_steps':6},style={'color':'sage'}))
 @pytest.fixture(autouse=True)
 def database(tmp_path,monkeypatch):
+    from app import security,config
+    monkeypatch.setattr(config,"MEMORY_AUTOMATIC",False)
+    monkeypatch.setattr(security,'TRUSTED_HOSTS',security.TRUSTED_HOSTS|{'testserver'})
+    monkeypatch.setattr(security,'TRUSTED_PEERS',security.TRUSTED_PEERS|{'testclient'})
     monkeypatch.setattr(db,'DB_BACKEND','sqlite'); monkeypatch.setattr(db,'DB_PATH',tmp_path/'test.db'); db.init_db()
 def test_spec_security(spec):
     d=spec.model_dump(); d['autonomy_policy']['salvar_relatorio']='allowed'
@@ -73,6 +77,7 @@ def test_delegation_plan_and_catalog(spec):
 
 
 def test_claude_sdk_gateway_in_chat_flow(spec, monkeypatch):
+    mock_sdk_client_for_query(monkeypatch)
     import json
     import claude_agent_sdk
     from fastapi.testclient import TestClient
@@ -83,7 +88,7 @@ def test_claude_sdk_gateway_in_chat_flow(spec, monkeypatch):
     proposal=json.dumps({'type':'proposal','text':None,'spec':spec.model_dump(),'rationale':'Adequado.'})
     async def fake_query(*, prompt, options):
         calls.append((prompt,options))
-        text = proposal if len(calls)==1 else ('{\"tasks\":[{\"capability\":\"code_review\",\"assignment\":\"Revisar trecho enviado\"}]}' if len(calls)==2 else ('Análise da função.' if len(calls)==3 else 'Resposta pelo SDK.'))
+        text = proposal if len(calls)==1 else ('{\"tasks\":[{\"capability\":\"code_review\",\"assignment\":\"Revisar trecho enviado\"}]}' if len(calls)==2 else 'Resposta pelo SDK.')
         yield ResultMessage(subtype='success',duration_ms=1,duration_api_ms=1,is_error=False,num_turns=1,session_id='test',result=text,usage={'input_tokens':10,'output_tokens':5},total_cost_usd=0.001)
     monkeypatch.setattr(claude_agent_sdk,'query',fake_query)
     monkeypatch.setattr(config,'MODEL_API_KEY','test-key')
@@ -98,14 +103,16 @@ def test_claude_sdk_gateway_in_chat_flow(spec, monkeypatch):
         assert result.json()=={'text':'Resposta pelo SDK.'}
         assert len(client.get('/cookbooks/source-files').json())==4
         runs=client.get(f'/agents/{aid}/runs').json()
-        assert runs[0]['status']=='completed' and runs[0]['steps']==3
-        assert abs(runs[0]['cost_estimate']-0.003)<0.000001
+        assert runs[0]['status']=='completed' and runs[0]['steps']==2
+        assert abs(runs[0]['cost_estimate']-0.002)<0.000001
         events=client.get(f"/runs/{runs[0]['id']}").json()['events']
-        assert [event['type'] for event in events] == ['started','plan','subagent_started','subagent_completed','synthesis_started','completed']
+        assert [event['type'] for event in events] == ['started','plan','mcp_enabled','native_execution','completed']
         assert client.get(f'/agents/{aid}/conversations').json()[0]['title']=='Oi'
-    assert all(opts.tools==[] and opts.allowed_tools==[] and opts.setting_sources==[] for _,opts in calls)
-    assert all(opts.max_turns==1 and opts.max_budget_usd > 0 for _,opts in calls)
-    assert 'Crie um agente' in calls[0][0] and 'Oi' in calls[1][0] and len(calls)==4
+    assert all(opts.tools==[] and opts.allowed_tools==[] and opts.setting_sources==[] for _,opts in calls[:2])
+    assert calls[2][1].tools==['Agent','WebSearch'] and 'code_review_1' in calls[2][1].agents
+    assert set(calls[2][1].agents['code_review_1'].tools)=={'mcp__ada__buscar_documentos','mcp__ada__ler_pagina','mcp__ada__consultar_notas','mcp__ada__consultar_historico'}
+    assert all(opts.max_budget_usd>0 for _,opts in calls)
+    assert 'Crie um agente' in calls[0][0] and 'Oi' in calls[1][0] and len(calls)==3
 
 def test_claude_sdk_error_is_not_success(monkeypatch):
     import claude_agent_sdk
@@ -145,13 +152,14 @@ def test_shared_budget_stops_before_next_call(spec,monkeypatch):
 
 
 def test_product_research_documents_and_exports(spec,monkeypatch):
+    mock_sdk_client_for_query(monkeypatch)
     import json
     import claude_agent_sdk
     from claude_agent_sdk import ResultMessage
     from fastapi.testclient import TestClient
     from app import main,config
     from app.model_gateway import ClaudeAgentGateway
-    outputs=iter([json.dumps({'tasks':[{'capability':'research','assignment':'Busque referências'}]}),'Fonte: https://example.com','## Proposta\nFazer MVP.'])
+    outputs=iter([json.dumps({'tasks':[{'capability':'research','assignment':'Busque referências'}]}),'## Proposta\nFazer MVP.'])
     calls=[]
     async def fake_query(*,prompt,options):
         calls.append((prompt,options))
@@ -168,14 +176,14 @@ def test_product_research_documents_and_exports(spec,monkeypatch):
         response=client.post(f'/agents/{aid}/conversations/{cid}/messages',json={'content':'Use o briefing e pesquise ideias.'})
         assert response.status_code==200,response.text
         assert 'checkout' in calls[0][0]
-        assert calls[1][1].tools==['WebSearch'] and calls[1][1].allowed_tools==['WebSearch']
+        assert calls[1][1].tools==['Agent','WebSearch'] and set(calls[1][1].agents['research_1'].tools)=={'WebSearch','mcp__ada__buscar_documentos','mcp__ada__ler_pagina','mcp__ada__consultar_notas','mcp__ada__consultar_historico'}
         assert calls[1][1].hooks['PreToolUse'][0].on_failure=='block'
         hook=calls[1][1].hooks['PreToolUse'][0].hooks[0]
         async def check_hook():
             results=[await hook({'tool_name':'WebSearch','hook_event_name':'PreToolUse'},None,None) for _ in range(4)]
             assert results[-1]['hookSpecificOutput']['permissionDecision']=='deny'
         asyncio.run(check_hook())
-        assert calls[0][1].tools==[] and calls[2][1].tools==[]
+        assert calls[0][1].tools==[] and len(calls)==2
         for kind,signature in [('md',b'## Proposta'),('docx',b'PK'),('pdf',b'%PDF'),('pptx',b'PK'),('xlsx',b'PK')]:
             exported=client.get(f'/agents/{aid}/conversations/{cid}/export?format={kind}')
             assert exported.status_code==200 and exported.content.startswith(signature)
@@ -220,7 +228,7 @@ def test_oauth_return_to_frontend(spec,monkeypatch):
         assert result.status_code==200
         state=parse_qs(urlsplit(result.json()['url']).query)['state'][0]
         monkeypatch.setattr(connections.httpx,'AsyncClient',FakeAsyncClient)
-        response=client.get('/connections/github/callback',params={'state':state,'code':'test-code'},follow_redirects=False)
+        response=client.get('/connections/github/callback',params={'state':state,'code':'test-code'},headers={'sec-fetch-site':'cross-site','sec-fetch-mode':'navigate','sec-fetch-dest':'document'},follow_redirects=False)
         assert response.status_code==303
         assert response.headers['location']=='http://127.0.0.1:5174/?connection=github&status=connected'
         assert 'test-code' not in response.headers['location']
@@ -354,7 +362,7 @@ def test_google_separate_oauth_scopes_and_shared_callback(monkeypatch):
             assert q['scope']==[connections.PROVIDERS[service]['scope']]
         state=q['state'][0]
         monkeypatch.setattr(connections.httpx,'AsyncClient',FakeClient)
-        r=client.get('/connections/drive/callback',params={'state':state,'code':'test'},follow_redirects=False)
+        r=client.get('/connections/drive/callback',params={'state':state,'code':'test'},headers={'sec-fetch-site':'cross-site','sec-fetch-mode':'navigate','sec-fetch-dest':'document'},follow_redirects=False)
         assert r.status_code==303 and r.headers['location'].endswith('?connection=classroom&status=connected')
         assert connections._tokens['classroom']['access_token']=='docs-token'
 
@@ -447,7 +455,8 @@ def test_mcp_protocol_document_search_is_scoped(spec):
     from mcp import ClientSession
     from mcp.shared.memory import create_client_server_memory_streams
     from app.mcp_tools import build_mcp
-    aid=repo.create_agent(spec);other=repo.create_agent(spec)
+    d=spec.model_dump();d['tools'].append('mcp_documentos');d['autonomy_policy']['mcp_documentos']='allowed'
+    aid=repo.create_agent(type(spec).model_validate(d));other=repo.create_agent(spec)
     with db.connect() as c:
         doc=db.insert_id(c,'INSERT INTO documents(agent_id,name) VALUES(?,?)',(aid,'briefing.txt'))
         c.execute('INSERT INTO chunks(document_id,agent_id,position,content) VALUES(?,?,?,?)',(doc,aid,0,'Produto busca reduzir abandono no checkout.'))
@@ -733,3 +742,713 @@ def test_multipass_cloud_init_warning_checks_tools_and_reports(monkeypatch):
     assert result['status']=='passed' and result['warnings']
     assert any('node' in c for c in commands) and any('npm' in c for c in commands)
     assert any('ip6tables' in c for c in commands)
+def test_global_boundary_blocks_untrusted_host_and_origin(spec):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    with TestClient(app,base_url='http://evil.example') as c:
+        assert c.get('/agents').status_code==403
+        assert c.post('/agents',json=spec.model_dump()).status_code==403
+    with TestClient(app,base_url='http://127.0.0.1:8000') as c:
+        assert c.post('/agents',json=spec.model_dump(),headers={'Origin':'https://evil.example'}).status_code==403
+        assert c.get('/agents',headers={'sec-fetch-site':'cross-site'}).status_code==403
+
+def test_atomic_step_reservation(spec,monkeypatch):
+    from app import infrastructure
+    from fastapi import HTTPException
+    import time
+    limited=spec.model_copy(update={'tools':['consultar_documentos'],'autonomy_policy':{'consultar_documentos':'allowed'},'limits':spec.limits.model_copy(update={'max_steps':1})})
+    aid=repo.create_agent(limited)
+    with db.connect() as c:
+        cid=db.insert_id(c,'INSERT INTO conversations(agent_id) VALUES(?)',(aid,))
+        rid=db.insert_id(c,"INSERT INTO runs(agent_id,conversation_id,status) VALUES(?,?,'draft')",(aid,cid))
+    calls=[]
+    def search(*args):calls.append(1);time.sleep(0.05);return {'trechos':[]}
+    monkeypatch.setattr(infrastructure,'search_documents',search)
+    async def invoke():return await asyncio.gather(*[infrastructure.request_tool(rid,infrastructure.ToolRequest(tool='consultar_documentos',arguments={'pergunta':'test'})) for _ in range(2)],return_exceptions=True)
+    results=asyncio.run(invoke())
+    assert len(calls)==1 and sum(isinstance(r,HTTPException) and r.status_code==409 for r in results)==1
+
+def test_notes_scope_crud_and_recall(spec):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.notes import memory_context,add_note
+    with TestClient(app) as c:
+        a=c.post('/agents',json=spec.model_dump()).json()['id'];b=c.post('/agents',json=spec.model_dump()).json()['id']
+        n=c.post(f'/agents/{a}/notes',json={'content':'Prefiro Inter.'}).json()['id']
+        assert 'Inter' in memory_context(a) and 'Inter' not in memory_context(b)
+        assert c.patch(f'/agents/{b}/notes/{n}',json={'content':'Não'}).status_code==404
+        pending=add_note(a,'Prefiro verde.','agent')['id']
+        assert 'verde' not in memory_context(a)
+        assert c.post(f'/agents/{a}/notes/{pending}/activate').status_code==200
+        assert 'verde' in memory_context(a)
+        assert c.put(f'/agents/{a}/memory-settings',json={'enabled':False,'automatic':False}).status_code==200
+        assert memory_context(a)==''
+        assert c.delete(f'/agents/{a}/notes/{n}').status_code==200
+        assert c.post(f'/agents/{a}/notes',json={'content':'sk-ant-'+('x'*30)}).status_code==422
+
+def test_automatic_memory_evidence_recall_and_manual_protection(spec,monkeypatch):
+    import json
+    from app import config
+    from app.notes import auto_remember,memory_context,add_note,list_notes
+    monkeypatch.setattr(config,'MEMORY_AUTOMATIC',True)
+    aid=repo.create_agent(spec)
+    with db.connect() as c:cid=db.insert_id(c,'INSERT INTO conversations(agent_id) VALUES(?)',(aid,))
+    manual=add_note(aid,'Prefiro verde.')['id']
+    response={'facts':[{'content':'Usa Inter.','evidence':'Prefiro Inter.','replace_id':None},{'content':'Memória inventada','evidence':'frase não dita','replace_id':None},{'content':'Alterar manual','evidence':'Prefiro Inter.','replace_id':manual}]}
+    asyncio.run(auto_remember(FakeGateway([json.dumps(response)]),aid,cid,'Prefiro Inter.'))
+    notes=list_notes(aid)
+    assert len(notes)==2 and 'Usa Inter.' in memory_context(aid,'fonte')
+    assert next(n for n in notes if n['id']==manual)['content']=='Prefiro verde.'
+    assert next(n for n in notes if n['content']=='Usa Inter.')['evidence']=='Prefiro Inter.'
+
+def test_create_uses_task_budget(spec,monkeypatch):
+    import json
+    from fastapi.testclient import TestClient
+    from app import main
+    from app.model_gateway import active_budget
+    class Checked(FakeGateway):
+        async def chat(self,*args,**kwargs):
+            assert active_budget.get() is not None
+            return await super().chat(*args,**kwargs)
+    monkeypatch.setattr(main,'gateway',Checked([json.dumps({'type':'proposal','spec':spec.model_dump(),'rationale':'ok'})]))
+    with TestClient(main.app) as c:assert c.post('/create/messages',json={'messages':[{'role':'user','content':'Crie'}]}).status_code==200
+def test_memory_disabled_skips_extraction(spec,monkeypatch):
+    from app import config
+    from app.notes import set_memory_settings,MemorySettings,auto_remember,list_notes
+    monkeypatch.setattr(config,'MEMORY_AUTOMATIC',True)
+    aid=repo.create_agent(spec)
+    with db.connect() as c:cid=db.insert_id(c,'INSERT INTO conversations(agent_id) VALUES(?)',(aid,))
+    set_memory_settings(aid,MemorySettings(enabled=False,automatic=False))
+    asyncio.run(auto_remember(FakeGateway([]),aid,cid,'Prefiro Inter.'))
+    assert list_notes(aid)==[]
+
+def test_vm_cleanup_failure_is_reported(monkeypatch):
+    from types import SimpleNamespace
+    from app.tools import workspace_sandbox as ws
+    workspace=ws.MultipassWorkspace(b'test');workspace.binary='multipass'
+    assert ws._vm_slot.acquire(blocking=False)
+    workspace.acquired=True
+    monkeypatch.setattr(ws.subprocess,'run',lambda *args,**kwargs:SimpleNamespace(returncode=1))
+    try:
+        with pytest.raises(RuntimeError,match='Limpeza'):workspace.close()
+        assert workspace.acquired
+    finally:
+        workspace.acquired=False;ws._vm_slot.release()
+
+def test_sqlite_context_closes_connection():
+    connection=db.connect()
+    with connection:connection.execute('SELECT 1')
+    with pytest.raises(sqlite3.ProgrammingError):connection.execute('SELECT 1')
+
+def test_proposed_memory_tool_requires_permission_and_review(spec):
+    from app.mcp_tools import build_mcp
+    _,names=build_mcp(repo.create_agent(spec),set())
+    assert 'mcp__ada__propor_nota' not in names
+    _,names=build_mcp(repo.create_agent(spec),{'mcp_memoria'})
+    assert 'mcp__ada__propor_nota' in names
+def test_memory_recalled_in_new_conversation(spec,monkeypatch):
+    import json
+    from fastapi.testclient import TestClient
+    from app import main,config
+    monkeypatch.setattr(config,'MEMORY_AUTOMATIC',True)
+    extracted=json.dumps({'facts':[{'content':'O usuário prefere Inter.','evidence':'Eu prefiro a fonte Inter.','replace_id':None}]})
+    prompts=[]
+    class Capture(FakeGateway):
+        async def chat(self,messages,**kwargs):
+            prompts.append(messages)
+            return await super().chat(messages,**kwargs)
+    monkeypatch.setattr(main,'gateway',Capture(['Entendido.',extracted,'Sua preferência é Inter.',json.dumps({'facts':[]})]))
+    with TestClient(main.app) as client:
+        aid=client.post('/agents',json=spec.model_dump()).json()['id']
+        c1=client.post(f'/agents/{aid}/conversations').json()['id']
+        assert client.post(f'/agents/{aid}/conversations/{c1}/messages',json={'content':'Eu prefiro a fonte Inter.'}).status_code==200
+        c2=client.post(f'/agents/{aid}/conversations').json()['id']
+        assert client.post(f'/agents/{aid}/conversations/{c2}/messages',json={'content':'Qual fonte usar?'}).status_code==200
+        assert 'O usuário prefere Inter.' in prompts[2][0]['content']
+
+
+def test_oauth_navigation_exception_is_narrow(monkeypatch):
+    import time
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app import connections
+    nav={'sec-fetch-site':'cross-site','sec-fetch-mode':'navigate','sec-fetch-dest':'document'}
+    with TestClient(app,base_url='http://127.0.0.1:8000') as client:
+        for provider in ('github','figma','drive'):
+            # A callback navigation reaches state validation, not an exchange.
+            r=client.get(f'/connections/{provider}/callback',params={'state':'invalid','code':'dummy'},headers=nav)
+            assert r.status_code==400 and 'expirada' in r.json()['detail']
+        monkeypatch.setitem(connections._pending,'expired-state',{'provider':'github','expires':time.time()-60})
+        assert client.get('/connections/github/callback',params={'state':'expired-state','code':'dummy'},headers=nav).status_code==400
+        assert client.get('/agents',headers=nav).status_code==403
+        assert client.get('/connections/github/callback',headers={**nav,'sec-fetch-mode':'cors'}).status_code==403
+        assert client.get('/connections/github/callback',headers={**nav,'sec-fetch-dest':'iframe'}).status_code==403
+        assert client.post('/connections/github/start',json={},headers=nav).status_code==403
+        assert client.get('/connections/unknown/callback',headers=nav).status_code==403
+    with TestClient(app,base_url='http://evil.example') as client:
+        assert client.get('/connections/github/callback',headers=nav).status_code==403
+
+
+def test_figma_oauth_cross_site_return_and_state_replay(monkeypatch):
+    from urllib.parse import parse_qs,urlsplit
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app import connections
+    monkeypatch.setenv('FIGMA_CLIENT_ID','test');monkeypatch.setenv('FIGMA_CLIENT_SECRET','test')
+    nav={'sec-fetch-site':'cross-site','sec-fetch-mode':'navigate','sec-fetch-dest':'document'}
+    calls=[]
+    class R:
+        def raise_for_status(self):pass
+        def json(self):return {'access_token':'dummy-token','scope':'current_user:read'}
+    class C:
+        def __init__(self,**kwargs):pass
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        async def post(self,*args,**kwargs):calls.append(1);return R()
+    with TestClient(app,base_url='http://127.0.0.1:8000') as client:
+        start=client.post('/connections/figma/start',json={'frontend_origin':'http://127.0.0.1:5173'})
+        state=parse_qs(urlsplit(start.json()['url']).query)['state'][0]
+        monkeypatch.setattr(connections.httpx,'AsyncClient',C)
+        result=client.get('/connections/figma/callback',params={'state':state,'code':'dummy'},headers=nav,follow_redirects=False)
+        assert result.status_code==303 and 'status=connected' in result.headers['location']
+        assert client.get('/connections/figma/callback',params={'state':state,'code':'dummy'},headers=nav).status_code==400
+        assert len(calls)==1
+
+def test_resource_grants_are_versioned_and_revocable(spec,monkeypatch):
+    from fastapi.testclient import TestClient
+    from fastapi import HTTPException
+    from app.main import app
+    from app.mcp_connections import authorize
+    with TestClient(app) as c:
+        aid=c.post('/agents',json=spec.model_dump()).json()['id']
+        response=c.put(f'/agents/{aid}/resources',json={'resources':{'github':['https://github.com/user/project'],'docs':['doc1']}})
+        assert response.status_code==200 and response.json()['version']==2
+        authorize(aid,'mcp_github','github','user/project')
+        with pytest.raises(HTTPException):authorize(aid,'mcp_github','github','user/private')
+        c.put(f'/agents/{aid}/resources',json={'resources':{}})
+        with pytest.raises(HTTPException):authorize(aid,'mcp_github','github','user/project')
+
+
+def test_native_delegation_hooks_limit_and_audit(spec,monkeypatch):
+    mock_sdk_client_for_query(monkeypatch)
+    import json,claude_agent_sdk
+    from claude_agent_sdk import ResultMessage
+    from fastapi.testclient import TestClient
+    from app import main,config
+    from app.model_gateway import ClaudeAgentGateway
+    captured=[]
+    async def fake_query(*,prompt,options):
+        captured.append(options)
+        if options.agents:
+            definition=options.agents['observability_1']
+            assert 'Agent' in definition.disallowedTools and definition.background is False
+            hook=next(h.hooks[0] for h in options.hooks['PreToolUse'] if h.matcher=='^(Agent|Task)$')
+            bad=await hook({'tool_input':{'subagent_type':'unknown'}},'bad',None)
+            assert bad['hookSpecificOutput']['permissionDecision']=='deny'
+            for i in range(config.MAX_SUBAGENTS):assert await hook({'tool_input':{'subagent_type':'observability_1'}},str(i),None)=={}
+            denied=await hook({'tool_input':{'subagent_type':'observability_1'}},'extra',None)
+            assert denied['hookSpecificOutput']['permissionDecision']=='deny'
+            await options.hooks['PostToolUse'][0].hooks[0]({},'0',None)
+            text='Análise concluída.'
+        else:text=json.dumps({'tasks':[{'capability':'observability','assignment':'Analise CI'}]})
+        yield ResultMessage(subtype='success',duration_ms=1,duration_api_ms=1,is_error=False,num_turns=1,session_id='x',result=text,total_cost_usd=0.001,usage={})
+    monkeypatch.setattr(config,'MODEL_API_KEY','test');monkeypatch.setattr(config,'MODEL_NAME','test')
+    monkeypatch.setattr(claude_agent_sdk,'query',fake_query);monkeypatch.setattr(main,'gateway',ClaudeAgentGateway())
+    with TestClient(main.app) as c:
+        aid=c.post('/agents',json=spec.model_dump()).json()['id'];cid=c.post(f'/agents/{aid}/conversations').json()['id']
+        result=c.post(f'/agents/{aid}/conversations/{cid}/messages',json={'content':'Investigue CI'})
+        assert result.status_code==200,result.text
+        rid=c.get(f'/agents/{aid}/runs').json()[0]['id']
+        events=c.get(f'/runs/{rid}').json()['events']
+        assert sum(e['type']=='subagent_started' for e in events)==config.MAX_SUBAGENTS
+        assert any(e['type']=='subagent_completed' for e in events)
+        assert captured[1].env['CLAUDE_AGENT_SDK_DISABLE_BUILTIN_AGENTS']=='1'
+
+
+def test_scheduled_review_continuity_and_unchanged_skip(spec,monkeypatch):
+    from app import reviews,main
+    from app.model_gateway import ClaudeAgentGateway
+    monkeypatch.setattr(main,'gateway',ClaudeAgentGateway())
+    from fastapi.testclient import TestClient
+    import json
+    state={'sha':'a'*40,'calls':0}
+    async def info(*args):return ('user/project','main',state['sha'],True)
+    async def send(aid,cid,body):
+        state['calls']+=1
+        with db.connect() as conn:prev=conn.execute("SELECT id FROM repository_reviews WHERE status='completed' ORDER BY id DESC LIMIT 1").fetchone()
+        return {'text':json.dumps({'commit':state['sha'],'previous_review_id':prev['id'] if prev else None,'summary':'Revisado','findings':[]})}
+    monkeypatch.setattr(reviews,'base_info',info);monkeypatch.setattr(reviews,'session',lambda:{'access_token':'test'})
+    monkeypatch.setattr(main,'send_message',send)
+    with TestClient(main.app) as c:
+        aid=c.post('/agents',json=spec.model_dump()).json()['id']
+        assert c.put(f'/agents/{aid}/resources',json={'resources':{'github':['user/project']}}).status_code==200
+        sid=c.post(f'/agents/{aid}/review-schedules',json={'repository':'user/project','max_daily_runs':3}).json()['id']
+        assert c.get(f'/agents/{aid}/review-schedules').json()[0]['enabled']==0
+        first=c.post(f'/agents/{aid}/review-schedules/{sid}/run');assert first.status_code==200,first.text
+        firstid=first.json()['id']
+        second=c.post(f'/agents/{aid}/review-schedules/{sid}/run')
+        assert second.json()['status']=='unchanged' and state['calls']==1
+        state['sha']='b'*40
+        third=c.post(f'/agents/{aid}/review-schedules/{sid}/run')
+        assert third.json()['report']['previous_review_id']==firstid and state['calls']==2
+        assert c.get(f'/agents/{aid}/reviews').json()[0]['status']=='completed'
+
+
+def test_review_failure_pauses_schedule(spec,monkeypatch):
+    from app import reviews,main
+    from app.model_gateway import ClaudeAgentGateway
+    monkeypatch.setattr(main,'gateway',ClaudeAgentGateway())
+    from fastapi.testclient import TestClient
+    async def info(*args):return ('user/project','main','a'*40,True)
+    async def send(*args):return {'text':'not json'}
+    monkeypatch.setattr(reviews,'base_info',info);monkeypatch.setattr(reviews,'session',lambda:{'access_token':'test'});monkeypatch.setattr(main,'send_message',send)
+    with TestClient(main.app) as c:
+        aid=c.post('/agents',json=spec.model_dump()).json()['id']
+        c.put(f'/agents/{aid}/resources',json={'resources':{'github':['user/project']}})
+        sid=c.post(f'/agents/{aid}/review-schedules',json={'repository':'user/project','enabled':True}).json()['id']
+        assert c.post(f'/agents/{aid}/review-schedules/{sid}/run').status_code==502
+        state=c.get(f'/agents/{aid}/review-schedules').json()[0]
+        assert state['enabled']==0 and state['status']=='idle'
+
+def test_chat_code_uses_current_user_task_and_no_duplicate(spec,monkeypatch):
+    from types import SimpleNamespace
+    from app import conversation_tools as ct,code_workflow
+    from app.models import AgentSpec
+    d=spec.model_dump();d['tools']+=['mcp_github','mcp_codigo'];d['autonomy_policy'].update(mcp_github='allowed',mcp_codigo='allowed');d['resources']={'github':['user/project']}
+    aid=repo.create_agent(AgentSpec.model_validate(d));calls=[]
+    async def prepare(a,c,body):
+        calls.append(body.task)
+        assert ct.code_in_chat.get()
+        return {'draft_id':'draft-test','text':'Proposta preparada','validation':{'status':'passed'}}
+    monkeypatch.setattr(code_workflow,'code_task',SimpleNamespace(__wrapped__=prepare))
+    async def run():
+        t=ct.chat_task.set((aid,123,'Implemente minha tela'));a=ct.chat_artifacts.set([])
+        try:
+            await ct.prepare_chat_code(aid,'user/project');await ct.prepare_chat_code(aid,'user/project')
+            assert ct.chat_artifacts.get()==['draft-test']
+        finally:ct.chat_task.reset(t);ct.chat_artifacts.reset(a)
+    asyncio.run(run());assert calls==['Implemente minha tela']
+
+
+def test_nested_sdk_calls_reserve_parent_budget(monkeypatch):
+    import claude_agent_sdk
+    from claude_agent_sdk import ResultMessage
+    from app import config
+    from app.model_gateway import ClaudeAgentGateway,TaskBudget,active_budget
+    monkeypatch.setattr(config,'MODEL_API_KEY','test');monkeypatch.setattr(config,'MODEL_NAME','test');monkeypatch.setattr(config,'SDK_MAX_BUDGET_USD',0.25)
+    budgets=[];gateway=ClaudeAgentGateway()
+    async def fake_query(*,prompt,options):
+        budgets.append(options.max_budget_usd)
+        if len(budgets)==1:
+            assert active_budget.get().reserved==0.25
+            await gateway.chat([{'role':'user','content':'nested'}])
+        yield ResultMessage(subtype='success',duration_ms=1,duration_api_ms=1,is_error=False,num_turns=1,session_id='x',result='ok',total_cost_usd=0.01,usage={})
+    monkeypatch.setattr(claude_agent_sdk,'query',fake_query)
+    async def run():
+        budget=TaskBudget(limit=0.4);t=active_budget.set(budget)
+        try:
+            await gateway.chat([{'role':'user','content':'outer'}])
+            assert abs(budgets[1]-0.15)<0.00001 and budget.reserved==0
+            assert abs(budget.spent-0.02)<0.00001
+        finally:active_budget.reset(t)
+    asyncio.run(run())
+
+
+def test_scheduler_only_runs_enabled_due_reviews(spec,monkeypatch):
+    import time
+    from app import reviews
+    aid=repo.create_agent(spec);calls=[]
+    with db.connect() as c:
+        sid=db.insert_id(c,'INSERT INTO review_schedules(agent_id,repository,interval_hours,enabled,next_at) VALUES(?,?,24,0,?)',(aid,'user/project',int(time.time())-10))
+    async def run(a,s):
+        calls.append((a,s))
+        with db.connect() as c:c.execute('UPDATE review_schedules SET next_at=? WHERE id=?',(int(time.time())+3600,s))
+    monkeypatch.setattr(reviews,'run_review',run)
+    asyncio.run(reviews.scheduler_tick());assert not calls
+    with db.connect() as c:c.execute('UPDATE review_schedules SET enabled=1 WHERE id=?',(sid,))
+    asyncio.run(reviews.scheduler_tick());asyncio.run(reviews.scheduler_tick());assert calls==[(aid,sid)]
+
+def test_github_mcp_protocol_and_live_revocation(spec,monkeypatch):
+    import anyio,json
+    from mcp import ClientSession
+    from mcp.shared.memory import create_client_server_memory_streams
+    from app.models import AgentSpec
+    from app import mcp_connections,repository
+    from app.mcp_tools import build_mcp
+    d=spec.model_dump();d['tools'].append('mcp_github');d['autonomy_policy']['mcp_github']='allowed';d['resources']={'github':['user/project']}
+    aid=repo.create_agent(AgentSpec.model_validate(d));calls=[]
+    async def info(*args):return ('user/project','main','a'*40,True)
+    async def read(*args):calls.append(args);return ('example','100644')
+    monkeypatch.setattr(repository,'base_info',info);monkeypatch.setattr(repository,'read_file',read);monkeypatch.setattr(repository,'session',lambda:{'access_token':'test'})
+    server=build_mcp(aid,{'mcp_github'})[0]['ada']['instance']
+    async def run():
+        async with create_client_server_memory_streams() as (client_streams,server_streams):
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(server.run,server_streams[0],server_streams[1],server.create_initialization_options())
+                async with ClientSession(client_streams[0],client_streams[1]) as client:
+                    await client.initialize()
+                    result=await client.call_tool('github_arquivo',{'repo':'user/project','path':'README.md'})
+                    assert json.loads(result.content[0].text)['content']=='example'
+                    denied=await client.call_tool('github_arquivo',{'repo':'user/other','path':'README.md'})
+                    assert denied.is_error
+                    new=repo.add_version(aid,spec,'Revogar','teste');repo.activate_version(aid,new)
+                    revoked=await client.call_tool('github_arquivo',{'repo':'user/project','path':'README.md'})
+                    assert revoked.is_error and len(calls)==1
+                tg.cancel_scope.cancel()
+    anyio.run(run)
+
+def test_scheduled_native_runtime_exposes_only_github_read_tools(spec,monkeypatch):
+    import json,claude_agent_sdk
+    from claude_agent_sdk import ResultMessage
+    from app.models import AgentSpec
+    from app import config
+    from app.model_gateway import ClaudeAgentGateway,active_review_schema,active_budget,TaskBudget
+    from app.orchestration import orchestrate
+    from app.reviews import ReviewReport
+    d=spec.model_dump();d['tools']+=['mcp_github','mcp_codigo','pesquisar_web','mcp_memoria'];d['autonomy_policy'].update(mcp_github='allowed',mcp_codigo='allowed',pesquisar_web='allowed',mcp_memoria='allowed');d['resources']={'github':['user/project']}
+    current=AgentSpec.model_validate(d);aid=repo.create_agent(current)
+    with db.connect() as c:
+        cid=db.insert_id(c,'INSERT INTO conversations(agent_id) VALUES(?)',(aid,))
+        rid=db.insert_id(c,"INSERT INTO runs(agent_id,conversation_id,status) VALUES(?,?,'running')",(aid,cid))
+    def result(text):return ResultMessage(subtype='success',duration_ms=1,duration_api_ms=1,is_error=False,num_turns=1,session_id='x',result=text,total_cost_usd=0.001,usage={})
+    async def plan(*,prompt,options):yield result(json.dumps({'tasks':[{'capability':'scheduled_review','assignment':'Revise'}]}))
+    class Client:
+        def __init__(self,options):
+            assert 'Agent' in options.allowed_tools
+            assert 'WebSearch' not in options.tools
+            assert all('preparar_codigo' not in t and 'propor_nota' not in t for t in options.allowed_tools)
+            assert all('WebSearch' not in a.tools and not any('preparar_codigo' in t for t in a.tools) for a in options.agents.values())
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        async def query(self,*args):pass
+        async def receive_response(self):yield result(json.dumps({'commit':'a'*40,'previous_review_id':None,'summary':'Revisado','findings':[]}))
+    monkeypatch.setattr(config,'MODEL_API_KEY','test');monkeypatch.setattr(config,'MODEL_NAME','test')
+    monkeypatch.setattr(claude_agent_sdk,'query',plan);monkeypatch.setattr(claude_agent_sdk,'ClaudeSDKClient',Client)
+    async def run():
+        t=active_review_schema.set(ReviewReport);b=active_budget.set(TaskBudget(limit=0.5))
+        try:assert ReviewReport.model_validate_json(await orchestrate(ClaudeAgentGateway(),current,[],'Revise user/project',rid)).commit=='a'*40
+        finally:active_review_schema.reset(t);active_budget.reset(b)
+    asyncio.run(run())
+
+def test_creation_preserves_selected_identity(spec, monkeypatch):
+    import json
+    from fastapi.testclient import TestClient
+    from app import main
+    monkeypatch.setattr(main, 'gateway', FakeGateway([json.dumps({'type':'proposal','spec':spec.model_dump(),'rationale':'Teste'})]))
+    with TestClient(main.app) as client:
+        response=client.post('/create/messages',json={'messages':[{'role':'user','content':'Criar pesquisador'}],'identity':{'name':'Bowie','avatar':'toucan','color':'amber'}})
+    assert response.status_code==200
+    assert response.json()['spec']['name']=='Bowie'
+    assert response.json()['spec']['style']['avatar']=='toucan'
+
+def test_structured_accepts_fenced_json():
+    from pydantic import BaseModel
+    class Result(BaseModel):
+        ok: bool
+    result=asyncio.run(generate_structured(FakeGateway(['```json\n{"ok":true}\n```']), [], Result))
+    assert result.ok
+
+def test_direct_creation_returns_proposal_without_interview(spec,monkeypatch):
+    import json
+    from app import main
+    from fastapi.testclient import TestClient
+    gateway=FakeGateway([json.dumps({'type':'question','text':'Qual fonte?'}),json.dumps({'type':'proposal','spec':spec.model_dump()})])
+    monkeypatch.setattr(main,'gateway',gateway)
+    with TestClient(main.app) as client:
+        response=client.post('/create/messages',json={'direct':True,'messages':[{'role':'user','content':'Analisar notícias e preparar relatórios'}],'identity':{'name':'Tom','avatar':'hedgehog','color':'amber'}})
+    assert response.status_code==200
+    assert response.json()['type']=='proposal'
+    assert response.json()['spec']['name']=='Tom'
+    assert response.json()['spec']['style']['avatar']=='hedgehog'
+
+def test_export_on_request_is_bound_to_original_response(spec,monkeypatch):
+    from app import main
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(main,'gateway',FakeGateway(['Relatório original','Outro conteúdo']))
+    with TestClient(main.app) as client:
+        aid=client.post('/agents',json=spec.model_dump()).json()['id']
+        cid=client.post(f'/agents/{aid}/conversations').json()['id']
+        client.post(f'/agents/{aid}/conversations/{cid}/messages',json={'content':'Analise.'})
+        exported=client.post(f'/agents/{aid}/conversations/{cid}/messages',json={'content':'Exporte a última resposta em Markdown'})
+        assert exported.status_code==200
+        import re
+        link=re.search(r'\]\(([^)]+)\)',exported.json()['text'])[1]
+        client.post(f'/agents/{aid}/conversations/{cid}/messages',json={'content':'Outra análise.'})
+        assert client.get(link.removeprefix('/api')).content.decode()=='Relatório original'
+        other=client.post(f'/agents/{aid}/conversations').json()['id']
+        assert client.get(link.removeprefix('/api').replace(f'conversations/{cid}/',f'conversations/{other}/')).status_code==404
+
+def test_delete_chat_removes_sourced_memory_and_keeps_other_chat(spec):
+    from app import main
+    from fastapi.testclient import TestClient
+    with TestClient(main.app) as client:
+        aid=client.post('/agents',json=spec.model_dump()).json()['id']
+        cid=client.post(f'/agents/{aid}/conversations').json()['id']
+        other=client.post(f'/agents/{aid}/conversations').json()['id']
+        with db.connect() as c:
+            c.execute("INSERT INTO messages(conversation_id,role,content) VALUES(?,'assistant','texto')",(cid,))
+            c.execute("INSERT INTO agent_notes(agent_id,content,status,source,conversation_id,evidence) VALUES(?,'Preferência','active','user',?,'texto')",(aid,cid))
+        assert client.delete(f'/agents/{aid}/conversations/{cid}').status_code==200
+        assert client.get(f'/agents/{aid}/conversations/{cid}/messages').status_code==404
+        assert client.get(f'/agents/{aid}/conversations/{other}/messages').status_code==200
+        with db.connect() as c:
+            note=c.execute('SELECT * FROM agent_notes WHERE agent_id=?',(aid,)).fetchone()
+            assert note is None
+
+
+def mock_sdk_client_for_query(monkeypatch):
+    import claude_agent_sdk
+    class Client:
+        def __init__(self,*,options):self.options=options
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        async def query(self,prompt):self.prompt=prompt
+        async def receive_response(self):
+            async for message in claude_agent_sdk.query(prompt=self.prompt,options=self.options):yield message
+    monkeypatch.setattr(claude_agent_sdk,'ClaudeSDKClient',Client)
+
+
+def test_persistent_summary_incremental_recall_and_delete(spec,monkeypatch):
+    import json
+    from app import conversation_context as ctx,main
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(ctx,'COMPACT_AFTER_MESSAGES',6)
+    monkeypatch.setattr(ctx,'RECENT_MESSAGES',4)
+    aid=repo.create_agent(spec)
+    with db.connect() as c:
+        cid=db.insert_id(c,'INSERT INTO conversations(agent_id) VALUES(?)',(aid,))
+        c.executemany('INSERT INTO messages(conversation_id,role,content) VALUES(?,?,?)',[(cid,'user' if i%2==0 else 'assistant',f'Mensagem {i}: requisito pagamento sem cadastro' if i==0 else f'Mensagem {i}') for i in range(10)])
+    gateway=FakeGateway([json.dumps({'summary':'Decisão: pagamento sem cadastro [mensagem 1].'})])
+    result=asyncio.run(ctx.build_context(gateway,aid,cid,'cadastro'))
+    assert any('Resumo anterior' in m['content'] for m in result)
+    assert any('Trechos originais' in m['content'] and 'pagamento' in m['content'] for m in result)
+    with db.connect() as c:
+        summary=c.execute('SELECT * FROM conversation_summaries WHERE conversation_id=?',(cid,)).fetchone()
+        assert summary['revision']==1
+        cursor=summary['last_message_id']
+        assert c.execute('SELECT COUNT(*) FROM messages WHERE conversation_id=?',(cid,)).fetchone()[0]==10
+    # A reload uses the persisted summary and needs no additional model call.
+    again=asyncio.run(ctx.build_context(FakeGateway([]),aid,cid,'cadastro'))
+    assert any('Decisão: pagamento sem cadastro' in m['content'] for m in again)
+    other=repo.create_agent(spec)
+    assert ctx.recall(other,cid,'cadastro',999999)==[]
+    with db.connect() as c:
+        c.executemany('INSERT INTO messages(conversation_id,role,content) VALUES(?,?,?)',[(cid,'user',f'Nova mensagem {i}') for i in range(8)])
+    asyncio.run(ctx.build_context(FakeGateway([json.dumps({'summary':'Resumo atualizado.'})]),aid,cid,'atualização'))
+    with db.connect() as c:
+        row=c.execute('SELECT * FROM conversation_summaries WHERE conversation_id=?',(cid,)).fetchone()
+        assert row['revision']==2 and row['last_message_id']>cursor
+    with TestClient(main.app) as client:
+        assert client.delete(f'/agents/{aid}/conversations/{cid}').status_code==200
+    with db.connect() as c:assert not c.execute('SELECT 1 FROM conversation_summaries WHERE conversation_id=?',(cid,)).fetchone()
+
+def test_summary_failure_preserves_cursor_and_messages(spec,monkeypatch):
+    from app import conversation_context as ctx
+    monkeypatch.setattr(ctx,'COMPACT_AFTER_MESSAGES',6);monkeypatch.setattr(ctx,'RECENT_MESSAGES',4)
+    aid=repo.create_agent(spec)
+    with db.connect() as c:
+        cid=db.insert_id(c,'INSERT INTO conversations(agent_id) VALUES(?)',(aid,))
+        c.executemany("INSERT INTO messages(conversation_id,role,content) VALUES(?,'user',?)",[(cid,f'Histórico {i}') for i in range(10)])
+    context=asyncio.run(ctx.build_context(FakeGateway(['invalid']),aid,cid,'Histórico'))
+    assert context
+    with db.connect() as c:
+        assert not c.execute('SELECT 1 FROM conversation_summaries WHERE conversation_id=?',(cid,)).fetchone()
+        assert c.execute('SELECT COUNT(*) FROM messages WHERE conversation_id=?',(cid,)).fetchone()[0]==10
+
+def test_delete_profile_removes_only_its_data(spec):
+    from app import main
+    from fastapi.testclient import TestClient
+    with TestClient(main.app) as client:
+        aid=client.post('/agents',json=spec.model_dump()).json()['id']
+        other=client.post('/agents',json=spec.model_dump()).json()['id']
+        cid=client.post(f'/agents/{aid}/conversations').json()['id']
+        client.post(f'/agents/{aid}/documents?name=brief.txt',content=b'Contexto',headers={'content-type':'application/octet-stream'})
+        with db.connect() as c:
+            c.execute("INSERT INTO messages(conversation_id,role,content) VALUES(?,'user','mensagem')",(cid,))
+            c.execute("INSERT INTO conversation_summaries(conversation_id,summary,last_message_id) VALUES(?,'Resumo',1)",(cid,))
+            c.execute("INSERT INTO agent_notes(agent_id,content,status,source,conversation_id) VALUES(?,'Memória','active','agent',?)",(aid,cid))
+            rid=db.insert_id(c,"INSERT INTO runs(agent_id,conversation_id,status) VALUES(?,?,'completed')",(aid,cid))
+            c.execute("INSERT INTO run_events(run_id,seq,type,payload_json) VALUES(?,1,'completed','{}')",(rid,))
+            c.execute("INSERT INTO approvals(run_id,tool,payload_json,status) VALUES(?,'salvar_relatorio','{}','pending')",(rid,))
+        assert client.delete(f'/agents/{aid}').status_code==200
+        assert client.get(f'/agents/{aid}').status_code==404
+        assert client.get(f'/agents/{other}').status_code==200
+        with db.connect() as c:
+            assert not c.execute('SELECT 1 FROM messages WHERE conversation_id=?',(cid,)).fetchone()
+            assert not c.execute('SELECT 1 FROM agent_notes WHERE agent_id=?',(aid,)).fetchone()
+            assert not c.execute('SELECT 1 FROM documents WHERE agent_id=?',(aid,)).fetchone()
+
+
+def test_chat_reports_provider_rate_limit(spec,monkeypatch):
+    import httpx
+    from app import main
+    from fastapi.testclient import TestClient
+    class LimitedGateway(ModelGateway):
+        async def chat(self,messages,**kwargs):
+            request=httpx.Request('POST','https://example.invalid')
+            response=httpx.Response(429,request=request)
+            raise httpx.HTTPStatusError('limited',request=request,response=response)
+    monkeypatch.setattr(main,'gateway',LimitedGateway())
+    with TestClient(main.app) as client:
+        aid=client.post('/agents',json=spec.model_dump()).json()['id']
+        cid=client.post(f'/agents/{aid}/conversations').json()['id']
+        response=client.post(f'/agents/{aid}/conversations/{cid}/messages',json={'content':'Oi'})
+        assert response.status_code==429
+        assert 'limite de uso' in response.json()['detail']
+        assert client.get(f'/agents/{aid}/conversations/{cid}/messages').json()==[]
+
+
+def test_workflows_version_execution_and_profile_cleanup(spec,monkeypatch):
+    from app import main,workflows
+    from app.model_gateway import ClaudeAgentGateway
+    from fastapi.testclient import TestClient
+    calls=[]
+    async def send(aid,cid,body):calls.append((aid,cid,body.content));return {'text':'Entrega do workflow.'}
+    monkeypatch.setattr(main,'gateway',ClaudeAgentGateway());monkeypatch.setattr(main,'send_message',send)
+    with TestClient(main.app) as client:
+        aid=client.post('/agents',json=spec.model_dump()).json()['id']
+        other=client.post('/agents',json=spec.model_dump()).json()['id']
+        base=f'/agents/{aid}/workflows'
+        created=client.post(base,json={'name':'Relatório','objective':'Pesquisar contexto e preparar relatório.'});assert created.status_code==200
+        wid=created.json()['id'];assert created.json()['enabled'] is False
+        assert client.get(f'/agents/{other}/workflows/{wid}/runs').status_code==404
+        result=client.post(f'{base}/{wid}/run');assert result.status_code==200,result.text
+        assert calls[0][2]=='Pesquisar contexto e preparar relatório.'
+        assert client.post(f'{base}/{wid}/run').status_code==429
+        assert client.get(f'{base}/{wid}/runs').json()[0]['version']==1
+        assert client.patch(f'{base}/{wid}/recurrence',json={'enabled':True}).status_code==200
+        assert client.put(f'{base}/{wid}',json={'name':'Novo relatório','objective':'Analisar métricas e criar relatório.'}).json()['version']==2
+        assert client.get(base).json()[0]['enabled']==0
+        assert len(client.get(f'{base}/{wid}/versions').json())==2
+        assert client.delete(f'/agents/{aid}').status_code==200
+        with db.connect() as c:assert c.execute('SELECT COUNT(*) FROM workflow_runs').fetchone()[0]==0
+
+def test_workflow_failure_pauses_and_restart_recovery(spec,monkeypatch):
+    from app import main,workflows
+    from app.model_gateway import ClaudeAgentGateway
+    from fastapi import HTTPException
+    from fastapi.testclient import TestClient
+    async def send(*args):raise HTTPException(502,'Falha simulada')
+    monkeypatch.setattr(main,'gateway',ClaudeAgentGateway());monkeypatch.setattr(main,'send_message',send)
+    with TestClient(main.app) as client:
+        aid=client.post('/agents',json=spec.model_dump()).json()['id'];base=f'/agents/{aid}/workflows'
+        wid=client.post(base,json={'name':'Fluxo','objective':'Preparar entrega.'}).json()['id']
+        client.patch(f'{base}/{wid}/recurrence',json={'enabled':True})
+        assert client.post(f'{base}/{wid}/run').status_code==502
+        assert client.get(base).json()[0]['enabled']==0
+        assert client.get(f'{base}/{wid}/runs').json()[0]['status']=='failed'
+        with db.connect() as c:c.execute("UPDATE workflows SET status='running',enabled=1 WHERE id=?",(wid,))
+        workflows.recover_interrupted()
+        assert client.get(base).json()[0]['status']=='idle'
+        assert client.get(base).json()[0]['enabled']==0
+
+
+def test_attachment_text_scope_and_chat(spec,monkeypatch):
+    from app import main
+    from fastapi.testclient import TestClient
+    captured=[]
+    class Gateway(ModelGateway):
+        async def chat(self,messages,**kwargs):captured.extend(messages);return ModelResult('Análise recebida.',1,1,False)
+    monkeypatch.setattr(main,'gateway',Gateway())
+    with TestClient(main.app) as client:
+        aid=client.post('/agents',json=spec.model_dump()).json()['id']
+        cid=client.post(f'/agents/{aid}/conversations').json()['id']
+        other=client.post(f'/agents/{aid}/conversations').json()['id']
+        base=f'/agents/{aid}/conversations/{cid}'
+        upload=client.post(base+'/attachments?name=vendas.csv',content=b'produto,quantidade,preco\nMaca,2,10')
+        assert upload.status_code==200,upload.text
+        ident=upload.json()['id']
+        assert client.post(f'/agents/{aid}/conversations/{other}/messages',json={'content':'Analisar','attachment_ids':[ident]}).status_code==422
+        result=client.post(base+'/messages',json={'content':'Analise os dados','attachment_ids':[ident]})
+        assert result.status_code==200,result.text
+        assert any('Maca,2,10' in str(m['content']) for m in captured)
+        assert client.post(base+'/messages',json={'content':'Analisar','attachment_ids':[ident]}).status_code==422
+        assert client.delete(base).status_code==200
+        with db.connect() as c:assert not c.execute('SELECT 1 FROM chat_attachments WHERE id=?',(ident,)).fetchone()
+
+def test_gemini_image_payload_and_reset(spec,monkeypatch):
+    import httpx,base64
+    from app import config,main
+    from app.model_gateway import OpenAICompatibleGateway,active_images
+    from fastapi.testclient import TestClient
+    captured=[]
+    class HTTP:
+        def __init__(self,**kwargs):pass
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        async def post(self,url,*,json,headers):
+            captured.append(json)
+            return httpx.Response(200,json={'choices':[{'message':{'content':'Imagem recebida.'}}],'usage':{'prompt_tokens':10,'completion_tokens':5}},request=httpx.Request('POST',url))
+    monkeypatch.setattr(httpx,'AsyncClient',HTTP);monkeypatch.setattr(main,'gateway',OpenAICompatibleGateway())
+    monkeypatch.setattr(config,'MODEL_NAME','gemini-test');monkeypatch.setattr(config,'MODEL_BASE_URL','https://generativelanguage.googleapis.com/v1beta/openai');monkeypatch.setattr(config,'MODEL_API_KEY','test')
+    monkeypatch.setenv('ADA_INPUT_USD_PER_MTOK','1');monkeypatch.setenv('ADA_OUTPUT_USD_PER_MTOK','10')
+    image=base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=')
+    with TestClient(main.app) as client:
+        aid=client.post('/agents',json=spec.model_dump()).json()['id'];cid=client.post(f'/agents/{aid}/conversations').json()['id'];base=f'/agents/{aid}/conversations/{cid}'
+        assert client.post(base+'/attachments?name=bad.png',content=b'not image').status_code==400
+        ident=client.post(base+'/attachments?name=image.png',content=image).json()['id']
+        result=client.post(base+'/messages',json={'content':'Descreva','attachment_ids':[ident]});assert result.status_code==200,result.text
+        assert captured[0]['messages'][-1]['content'][1]['image_url']['url'].startswith('data:image/png;base64,')
+    assert not active_images.get()
+
+def test_private_cloud_auth_origin_and_api_prefix(spec,monkeypatch):
+    from app import main
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv('ADA_DEPLOYMENT_MODE','private_cloud');monkeypatch.setenv('ADA_PUBLIC_ORIGIN','https://ada.example');monkeypatch.setenv('ADA_ACCESS_PASSWORD','test-password-long-enough-123');monkeypatch.setenv('ADA_DATABASE_BACKEND','postgres')
+    with TestClient(main.app,base_url='https://ada.example') as client:
+        assert client.get('/api/agents').status_code==401
+        assert client.get('/health').status_code==200
+        assert client.get('/api/agents',auth=('ada','wrong')).status_code==401
+        assert client.get('/api/agents',auth=('ada','test-password-long-enough-123')).status_code==200
+        assert client.post('/api/agents',json=spec.model_dump(),auth=('ada','test-password-long-enough-123'),headers={'Origin':'https://evil.example'}).status_code==403
+        assert client.get('/api/agents',auth=('ada','test-password-long-enough-123'),headers={'Host':'other.example'}).status_code==403
+    monkeypatch.delenv('ADA_ACCESS_PASSWORD')
+    with TestClient(main.app,base_url='https://ada.example') as client:assert client.get('/api/agents').status_code==503
+
+
+def test_claude_image_uses_multimodal_prompt(monkeypatch):
+    import claude_agent_sdk
+    from claude_agent_sdk import ResultMessage
+    from app import config
+    from app.model_gateway import ClaudeAgentGateway,active_images
+    seen=[]
+    async def query(*,prompt,options):
+        async for item in prompt:seen.append(item)
+        yield ResultMessage(subtype='success',duration_ms=1,duration_api_ms=1,is_error=False,num_turns=1,session_id='image-test',result='Imagem analisada.',total_cost_usd=.001,usage={'input_tokens':1,'output_tokens':1})
+    monkeypatch.setattr(claude_agent_sdk,'query',query)
+    monkeypatch.setattr(config,'MODEL_API_KEY','test');monkeypatch.setattr(config,'MODEL_NAME','test')
+    token=active_images.set([{'mime':'image/png','data':'testdata'}])
+    try:result=asyncio.run(ClaudeAgentGateway().chat([{'role':'user','content':'Analise a imagem.'}]))
+    finally:active_images.reset(token)
+    assert seen[0]['message']['content'][1]['source']['media_type']=='image/png'
+    assert result.text=='Imagem analisada.'
+
+
+@pytest.mark.parametrize('avatar',['bear','crab'])
+def test_new_character_identity_persisted(spec,avatar):
+    from app import main
+    from fastapi.testclient import TestClient
+    data=spec.model_dump();data['name']='Nome escolhido';data['style']['avatar']=avatar
+    with TestClient(main.app) as client:
+        result=client.post('/agents',json=data);assert result.status_code==200
+        aid=result.json()['id']
+        assert client.get(f'/agents/{aid}').json()['spec']['style']['avatar']==avatar
+        entry=next(a for a in client.get('/agents').json() if a['id']==aid)
+        assert entry['avatar']==avatar and entry['name']=='Nome escolhido'
+
+
+def test_postgres_adapter_escapes_literal_percent_in_execute_and_many():
+    captured=[]
+    class Raw:
+        def execute(self,query,params):captured.append((query,params))
+        def cursor(self):return self
+        def __enter__(self):return self
+        def __exit__(self,*args):pass
+        def executemany(self,query,rows):captured.append((query,rows))
+    adapter=db.PgConnection(Raw())
+    query="SELECT ? WHERE 'image/png' LIKE 'image/%' AND 'Arquivo solicitado: teste' LIKE 'Arquivo solicitado:%'"
+    adapter.execute(query,('100% do parâmetro',))
+    adapter.executemany(query,[('outro valor %',)])
+    expected="SELECT %s WHERE 'image/png' LIKE 'image/%%' AND 'Arquivo solicitado: teste' LIKE 'Arquivo solicitado:%%'"
+    assert captured[0]==(expected,('100% do parâmetro',))
+    assert captured[1]==(expected,[('outro valor %',)])

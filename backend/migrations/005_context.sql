@@ -1,0 +1,2 @@
+CREATE TABLE IF NOT EXISTS conversation_summaries (conversation_id BIGINT PRIMARY KEY REFERENCES conversations(id), summary TEXT NOT NULL, last_message_id BIGINT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP);
+ALTER TABLE conversation_summaries ENABLE ROW LEVEL SECURITY;

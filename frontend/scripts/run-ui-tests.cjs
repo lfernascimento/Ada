@@ -1,0 +1,10 @@
+const {JSDOM}=require('jsdom');
+const dom=new JSDOM('<!doctype html><html><body></body></html>',{url:'http://127.0.0.1:5173/'});
+global.window=dom.window;global.document=dom.window.document;
+Object.defineProperty(global,'navigator',{value:dom.window.navigator,configurable:true});
+for(const key of ['HTMLElement','HTMLInputElement','HTMLTextAreaElement','Event','MouseEvent','MutationObserver'])global[key]=dom.window[key];
+global.requestAnimationFrame=callback=>setTimeout(callback,0);global.cancelAnimationFrame=clearTimeout;
+window.scrollTo=()=>{};global.IS_REACT_ACT_ENVIRONMENT=true;
+const path=require('node:path');const Module=require('node:module');
+const result=require('esbuild').buildSync({entryPoints:[path.join(__dirname,'../tests/chat.test.tsx')],bundle:true,write:false,platform:'node',format:'cjs',packages:'external',jsx:'automatic'});
+const filename=path.join(__dirname,'../chat-test.bundle.cjs');const runner=new Module(filename,module);runner.filename=filename;runner.paths=Module._nodeModulePaths(path.dirname(filename));runner._compile(result.outputFiles[0].text,filename);

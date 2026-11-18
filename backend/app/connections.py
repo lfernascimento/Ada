@@ -58,7 +58,7 @@ def list_connections():
     for k,p in PROVIDERS.items():
         _,client,secret=settings(k); ready=bool(client and secret)
         token=_tokens.get(k); connected=bool(token and (not token.get('expires_at') or token['expires_at']>time.time()))
-        items.append({'id':k,'name':p['label'],'configured':ready,'connected':connected,'permissions':p['scope'],'access':'leitura','storage':'memória temporária','granted_scopes':token.get('scopes','') if token and connected else ''})
+        items.append({'id':k,'name':p['label'],'configured':ready,'connected':connected,'permissions':p['scope'],'callback_url':callback_url(k),'access':'leitura','storage':'memória temporária','granted_scopes':token.get('scopes','') if token and connected else ''})
     items.extend([{'id':'mcp','name':'MCP','configured':True,'connected':False,'access':'interno'}, {'id':'sandbox','name':'Sandbox de código','configured':True,'connected':False,'access':'execução manual'}, {'id':'vscode','name':'VS Code','configured':False,'connected':False,'access':'não implementado'}])
     return items
 
@@ -72,7 +72,8 @@ def start(provider:str, request:Request, body:StartBody=StartBody()):
     p,client,secret=settings(provider)
     if not client or not secret: raise HTTPException(503,'Cadastre o aplicativo OAuth e configure o ID e segredo deste serviço no .env.')
     origin=body.frontend_origin
-    if origin and (not re.fullmatch(r'http://(?:localhost|127\.0\.0\.1):517[3-9]',origin) or (request.headers.get('origin') and request.headers['origin']!=origin)):
+    cloud_origin=os.getenv('ADA_PUBLIC_ORIGIN','').rstrip('/') if os.getenv('ADA_DEPLOYMENT_MODE')=='private_cloud' else ''
+    if origin and ((origin!=cloud_origin and not re.fullmatch(r'http://(?:localhost|127\.0\.0\.1):517[3-9]',origin)) or (request.headers.get('origin') and request.headers['origin']!=origin)):
         raise HTTPException(400,'Endereço de retorno do frontend inválido.')
     for key,value in list(_pending.items()):
         if value['expires']<time.time(): _pending.pop(key,None)

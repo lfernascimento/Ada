@@ -1,7 +1,8 @@
 // Nomes selecionados para novos agentes.
 export const agentNames = [
   'Íris', 'Otto', 'Nina', 'Luna', 'Alma', 'Leo', 'Theo', 'Tom', 'Nora', 'Juno',
-  'Pip', 'Ben', 'Bowie', 'Ziggy', 'Agnès', 'Wes', 'Akira', 'Hayao', 'Charlie', 'Buster',
+  'Pip', 'Ben', 'Bowie', 'Ziggy', 'Agnès', 'Wes', 'Akira', 'Hayao', 'Charlie', 'Buster', 'Otelo', 'Chico', 'Cléo', 'Guido', 'Santos', 
+  'Hedy'
 ] as const;
 
 export function chooseAgentName(existingNames: string[]): string {

@@ -4,7 +4,7 @@ setup:
 	.venv/bin/pip install -r backend/requirements.txt
 	cd frontend && npm install
 dev:
-	@trap 'kill 0' INT TERM EXIT; cd backend && ../.venv/bin/uvicorn app.main:app --port 8000 & cd frontend && npm run dev & wait
+	bash backend/scripts/dev-linux.sh
 test:
 	cd backend && ../.venv/bin/python -m pytest
 reset-demo:

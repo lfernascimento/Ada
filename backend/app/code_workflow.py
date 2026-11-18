@@ -1,3 +1,4 @@
+from .task_runtime import task_limited
 """Fluxo de código: repositório público, proposta, sandbox temporária e PR sob ação explícita."""
 import asyncio,difflib,json,re,secrets,time
 import httpx
@@ -62,6 +63,7 @@ async def download_archive(name, sha):
     except (httpx.HTTPError,ValueError):return None
 
 @router.post('/agents/{agent_id}/conversations/{cid}/code')
+@task_limited
 async def code_task(agent_id:int,cid:int,body:CodeRequest):
     from . import main
     try:spec=repo.get_active_spec(agent_id)
@@ -72,7 +74,7 @@ async def code_task(agent_id:int,cid:int,body:CodeRequest):
     name,branch,sha,can_push=await repository.base_info(body.repository,token)
     occupied,candidates=await tree_candidates(name,sha,token)
     if not candidates:raise HTTPException(422,'Nenhum arquivo de texto compatível encontrado.')
-    budget=TaskBudget(limit=config.TASK_BUDGET_USD)
+    budget=active_budget.get() or TaskBudget(limit=config.TASK_BUDGET_USD,max_calls=max(2,spec.limits.max_steps))
     if not 0<budget.limit<=5:raise HTTPException(503,'Orçamento inválido.')
     with connect() as c:
         rid=insert_id(c,"INSERT INTO runs(agent_id,conversation_id,status) VALUES(?,?,'running')",(agent_id,cid))
@@ -94,7 +96,8 @@ async def code_task(agent_id:int,cid:int,body:CodeRequest):
                 'Retorne JSON: summary, title e files, com o conteúdo integral de cada arquivo alterado. '
                 'Só altere arquivos selecionados ou crie novos arquivos de texto em caminhos relativos. '
                 'Não afirme ter executado testes nem diga que o PR foi aberto.')
-        payload={'agente':{'nome':spec.name,'objetivo':spec.purpose,'instrucoes':spec.instructions},'tarefa':body.task,'arquivos_existentes':originals,'caminhos_do_repositorio':candidates[:800]}
+        from .notes import memory_context
+        payload={'notas':memory_context(agent_id,body.task),'agente':{'nome':spec.name,'objetivo':spec.purpose,'instrucoes':spec.instructions},'tarefa':body.task,'arquivos_existentes':originals,'caminhos_do_repositorio':candidates[:800]}
         proposal=await generate_structured(main.gateway,[{'role':'system','content':prompt},{'role':'user','content':json.dumps(payload,ensure_ascii=False)}],Proposal,max_retries=0)
         def proposed_changes(proposal):
             paths=[x.path for x in proposal.files]
@@ -149,13 +152,14 @@ async def code_task(agent_id:int,cid:int,body:CodeRequest):
         if validation.get('warnings'):
             validation['message']+=' '+ ' '.join(validation['warnings'])
         draft_id=secrets.token_urlsafe(24)
-        draft={'repository':name,'branch':branch,'base_sha':sha,'files':files,'title':proposal.title,'description':proposal.summary+'\n\nVerificações: '+validation['message'], 'validation_status':validation['status'],'created':time.time(),'status':'ready','can_push':can_push}
+        draft={'agent_id':agent_id,'conversation_id':cid,'validation':validation,'diff':'\n'.join(diffs),'repository':name,'branch':branch,'base_sha':sha,'files':files,'title':proposal.title,'description':proposal.summary+'\n\nVerificações: '+validation['message'], 'validation_status':validation['status'],'created':time.time(),'status':'ready','can_push':can_push}
         result_text=proposal.summary+'\n\n'+validation['message']+'\nArquivos: '+', '.join(f['path'] for f in files)+'\nVocê pode revisar a alteração na Ada ou no PR antes de integrá-la.'
         with connect() as c:
             begin_write(c)
             row=c.execute('SELECT status FROM runs WHERE id=?',(rid,)).fetchone()
             if not row or row['status']!='running':raise RuntimeError('Execução cancelada.')
-            c.executemany('INSERT INTO messages(conversation_id,role,content) VALUES(?,?,?)',[(cid,'user',body.task),(cid,'assistant',result_text)])
+            from .conversation_tools import code_in_chat
+            if not code_in_chat.get():c.executemany('INSERT INTO messages(conversation_id,role,content) VALUES(?,?,?)',[(cid,'user',body.task),(cid,'assistant',result_text)])
             c.execute("UPDATE runs SET status='completed',steps=?,tokens_in=?,tokens_out=?,cost_estimate=? WHERE id=?",(budget.calls,budget.input_tokens,budget.output_tokens,budget.spent if budget.cost_known else None,rid))
             emit(c,rid,'code_prepared',{'files':[f['path'] for f in files],'validation':validation,'draft_id':draft_id})
             emit(c,rid,'completed',{'cost_usd':budget.spent,'calls':budget.calls})
@@ -165,6 +169,14 @@ async def code_task(agent_id:int,cid:int,body:CodeRequest):
         repository._drafts[draft_id]=draft
         repository._locks[draft_id]=asyncio.Lock()
         return {'text':result_text,'draft_id':draft_id,'repository':name,'branch':branch,'base_sha':sha,'diff':'\n'.join(diffs),'attempts':attempts,'files':[f['path'] for f in files],'validation':validation,'can_push':can_push}
+    except asyncio.CancelledError:
+        with connect() as c:
+            begin_write(c)
+            current=c.execute('SELECT status FROM runs WHERE id=?',(rid,)).fetchone()
+            if current and current['status']=='running':
+                c.execute("UPDATE runs SET status='cancelled',cost_estimate=NULL WHERE id=?",(rid,))
+                emit(c,rid,'cancelled',{'reason':'Preparação de código interrompida.'})
+        raise
     except Exception as exc:
         with connect() as c:
             begin_write(c)
@@ -175,3 +187,10 @@ async def code_task(agent_id:int,cid:int,body:CodeRequest):
         if isinstance(exc,HTTPException):raise
         raise HTTPException(502,'Não foi possível preparar a alteração. Verifique modelo, repositório e orçamento.')
     finally:active_budget.reset(btoken)
+
+
+@router.get('/agents/{agent_id}/conversations/{cid}/code-proposals')
+def chat_proposals(agent_id:int,cid:int):
+    with connect() as c:
+        if not c.execute('SELECT 1 FROM conversations WHERE id=? AND agent_id=?',(cid,agent_id)).fetchone():raise HTTPException(404,'Conversa não encontrada.')
+    return [{'id':key,'repository':d['repository'],'title':d['title'],'description':d['description'],'diff':d['diff'],'validation':d['validation'],'can_push':d['can_push'],'status':d['status'],'url':d.get('url')} for key,d in repository._drafts.items() if d.get('agent_id')==agent_id and d.get('conversation_id')==cid and d['created']>time.time()-1800]

@@ -1,3 +1,4 @@
+from .task_runtime import task_limited
 """Revisão local de um arquivo e publicação explícita de um PR público no GitHub."""
 import asyncio, base64, difflib, re, secrets, time
 from urllib.parse import quote
@@ -117,6 +118,7 @@ async def prepare(body:Prepare):
     return {'id':draft_id,'repository':repo,'base_branch':branch,'base_sha':sha,'path':body.path,'diff':diff,'can_push':can_push,'expires_in':1800}
 
 @router.post('/suggest')
+@task_limited
 async def suggest(body:Suggestion):
     """A solicitação explícita usa o modelo para propor conteúdo; nunca publica."""
     from . import main, config
@@ -166,7 +168,7 @@ async def publish(draft_id:str):
             pr=await gh('POST',prefix+'/pulls',token,json={'title':draft['title'],'head':new_branch,'base':branch,'body':draft['description'],'draft':True})
             url=pr.get('html_url'); number=pr.get('number')
             if not isinstance(number,int) or url!=f'https://github.com/{repo}/pull/{number}': raise HTTPException(502,'Resposta inesperada do GitHub.')
-            draft['status']='published';return {'status':'published','branch':new_branch,'url':url,'number':number}
+            draft['status']='published';draft['url']=url;return {'status':'published','branch':new_branch,'url':url,'number':number}
         except Exception:
             # Never automatically retry: the GitHub call may have succeeded despite a timeout.
             draft['status']='uncertain'

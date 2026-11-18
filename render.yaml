@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: ada-private
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: ADA_DEPLOYMENT_MODE
+        value: private_cloud
+      - key: ADA_DATABASE_BACKEND
+        value: postgres
+      - key: ADA_PUBLIC_ORIGIN
+        sync: false
+      - key: ADA_ACCESS_USER
+        value: ada
+      - key: ADA_ACCESS_PASSWORD
+        sync: false
+      - key: SUPABASE_DATABASE_URL
+        sync: false
+      - key: SUPABASE_DB_CA_CERT
+        value: /etc/secrets/prod-ca-2021.crt
+      - key: ADA_MODEL_PROVIDER
+        value: claude_agent_sdk
+      - key: MODEL_NAME
+        sync: false
+      - key: MODEL_API_KEY
+        sync: false
+      - key: ADA_OAUTH_CALLBACK_BASE
+        sync: false

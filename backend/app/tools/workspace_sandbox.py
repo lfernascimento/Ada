@@ -61,7 +61,11 @@ class MultipassWorkspace:
             return self
         except BaseException:
             self.close();raise
+    def kill_workers(self):
+        p=subprocess.run([self.binary,'exec',self.name,'--','sudo','pkill','-KILL','-u','ada-sandbox'],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=30,check=False)
+        if p.returncode not in (0,1):raise RuntimeError('Não foi possível encerrar processos da tentativa anterior.')
     def validate(self,files):
+        self.kill_workers()
         payload_path=None
         try:
             with tempfile.NamedTemporaryFile(prefix='ada-vm-',suffix='.json',delete=False) as f:
@@ -81,11 +85,15 @@ class MultipassWorkspace:
             if payload_path is not None:
                 try:payload_path.unlink(missing_ok=True)
                 except OSError:pass
+            self.kill_workers()
     def close(self):
         if self.acquired:
-            try:subprocess.run([self.binary,'delete','--purge',self.name],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=60,check=False)
-            except (OSError,subprocess.SubprocessError):pass
-            finally:self.acquired=False;_vm_slot.release()
+            try:
+                p=subprocess.run([self.binary,'delete','--purge',self.name],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=60,check=False)
+                if p.returncode:raise RuntimeError('Limpeza da VM não confirmada: '+self.name+'. Verifique multipass list antes de continuar.')
+            except (OSError,subprocess.SubprocessError) as exc:
+                raise RuntimeError('Limpeza da VM não confirmada: '+self.name) from exc
+            else:self.acquired=False;_vm_slot.release()
     def __exit__(self,*args):self.close()
 
 class DockerWorkspace:

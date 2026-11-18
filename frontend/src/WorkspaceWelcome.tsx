@@ -1,0 +1,3 @@
+export default function WorkspaceWelcome({name,onIdea,onFile,onWorkflows}:{name:string;onIdea:()=>void;onFile:()=>void;onWorkflows:()=>void}){
+ return <div className="workspace-welcome" aria-label={`Nova conversa com ${name}`}><div className="welcome-copy"><h2>O que vamos fazer hoje?</h2><p>Traga uma ideia, um arquivo ou uma tarefa.</p></div><div className="welcome-options"><button onClick={onIdea}><span>01</span><b>Explorar uma ideia</b><i>↗</i></button><button onClick={onFile}><span>02</span><b>Analisar um arquivo</b><i>↗</i></button><button onClick={onWorkflows}><span>03</span><b>Abrir workflows</b><i>↗</i></button></div></div>
+}
