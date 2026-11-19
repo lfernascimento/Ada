@@ -25,7 +25,8 @@ class DelegationPlan(BaseModel):
 
 @router.get('/orchestration/capabilities')
 def capabilities():
-    return {'planning': True, 'execution': True, 'max_subagents': 4, 'tools_enabled': True, 'sdk': 'claude-agent-sdk', 'capabilities': CAPABILITIES, 'session_browser': 'conversas e execuções', 'native_subagents':True, 'mcp_integrations':['github','figma','workspace','documents','memory'], 'review_scheduling':True}
+    from . import config
+    return {'planning': True, 'execution': True, 'max_subagents': config.MAX_SUBAGENTS, 'tools_enabled': True, 'sdk': 'claude-agent-sdk', 'capabilities': CAPABILITIES, 'session_browser': 'conversas e execuções', 'native_subagents':True, 'mcp_integrations':['github','figma','workspace','documents','memory'], 'review_scheduling':True,'orchestration':config.SDK_ORCHESTRATION,'persistent_sessions':True,'skills':['investigar','analisar-dados','construir-entrega'],'streaming':True}
 
 @router.post('/runs/{run_id}/delegation-plan')
 def save_plan(run_id: int, plan: DelegationPlan):
@@ -51,9 +52,9 @@ def build_sdk_definitions(plan: DelegationPlan):
 # Especializações inspiradas nos exemplos oficiais; sem acesso externo automático.
 CAPABILITIES = {
  'research': {'label':'Pesquisa', 'scope':'Pode pesquisar na web quando autorizado.'},
- 'code_review': {'label':'Revisão de código', 'scope':'Revisa trechos fornecidos; acesso a repositórios ainda indisponível.'},
+ 'code_review': {'label':'Revisão de código', 'scope':'Revisa arquivos fornecidos e repositórios autorizados, em modo de leitura.'},
  'observability': {'label':'Observabilidade', 'scope':'Investiga CI e jobs de repositórios autorizados, em modo de leitura.'},
- 'custom': {'label':'Especialista criado para a tarefa', 'scope':'Atua em papel definido pelo plano, sem acesso externo.'},
+ 'custom': {'label':'Especialista criado para a tarefa', 'scope':'Atua no papel definido pela coordenação, usando as fontes autorizadas.'},
  'product': {'label':'Produto e PRD', 'scope':'Estrutura briefing, hipóteses, MVP e critérios de sucesso.'},
  'design': {'label':'Design de interface', 'scope':'Cria propostas e código HTML para prévia isolada.'},
  'scheduled_review': {'label':'Revisão de repositório','scope':'Revisa código e compara resultados de revisões anteriores, sem publicar.'},
@@ -90,6 +91,10 @@ async def orchestrate(gateway, spec, previous, content, run_id):
     from . import config
     from .config import MAX_SUBAGENTS
     from .tools.registry import search_documents, SearchDocuments
+    if isinstance(gateway,ClaudeAgentGateway) and config.SDK_ORCHESTRATION=='native':
+        from .sdk_native import run
+        return await run(gateway,spec,previous,content,run_id)
+    if config.SDK_ORCHESTRATION not in ('native','planned'):raise RuntimeError('Modo de orquestração inválido.')
     if not 1 <= MAX_SUBAGENTS <= 4: raise RuntimeError('Limite de especialistas inválido.')
     budget=active_budget.get()
     if budget:budget.max_calls=min(budget.max_calls,max(2,spec.limits.max_steps))

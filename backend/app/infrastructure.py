@@ -23,6 +23,8 @@ class RunRequest(Strict): conversation_id:int
 def emit(c,run_id,kind,payload):
     seq=c.execute('SELECT COALESCE(MAX(seq),0)+1 FROM run_events WHERE run_id=?',(run_id,)).fetchone()[0]
     c.execute('INSERT INTO run_events(run_id,seq,type,payload_json) VALUES(?,?,?,?)',(run_id,seq,kind,json.dumps(payload,ensure_ascii=False)))
+    from .runtime_events import publish
+    publish({'type':kind,'run_id':run_id,'payload':payload})
 
 def find_run(c,id):
     row=c.execute('SELECT * FROM runs WHERE id=?',(id,)).fetchone()
@@ -126,12 +128,14 @@ def get_run(run_id:int):
     return run
 
 @router.post('/runs/{run_id}/cancel')
-def cancel_run(run_id:int):
+async def cancel_run(run_id:int):
     with connect() as c:
         begin_write(c)
         run=find_run(c,run_id)
         if run['status'] not in ('draft','running','waiting_approval'): raise HTTPException(409,'A execução já foi encerrada.')
         c.execute("UPDATE runs SET status='cancelled' WHERE id=?",(run_id,)); c.execute("UPDATE approvals SET status='rejected',decided_at=CURRENT_TIMESTAMP WHERE run_id=? AND status='pending'",(run_id,)); emit(c,run_id,'cancelled',{})
+    from .runtime_events import interrupt
+    interrupt(run_id)
     return {'status':'cancelled'}
 
 @router.post('/runs/{run_id}/tools')

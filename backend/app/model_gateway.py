@@ -100,7 +100,7 @@ async def generate_structured(gateway,messages,pydantic_model,max_retries=2):
 
 
 class ClaudeAgentGateway(ModelGateway):
-    """SDK em modo de conversa, sem ferramentas e sem carregar instruções locais."""
+    """Native agent loop with scoped tools, durable sessions and bounded API spend."""
     async def chat(self, messages, *, schema=None, stream=False, temperature=0.2):
         import asyncio
         import tempfile
@@ -135,8 +135,47 @@ class ClaudeAgentGateway(ModelGateway):
         call_budget = min(config.SDK_MAX_BUDGET_USD, remaining)
         result = None
         if budget:budget.reserved+=call_budget
+        from contextlib import ExitStack
+        from . import sdk_workspace
+        from .runtime_events import publish
+        native=active_native.get()
+        runtime=None
+        accounted=False
+        call_cost=None
+        def account_result():
+            nonlocal accounted,call_cost
+            if accounted or result is None:return
+            import math
+            if result.subtype=='error_during_execution':raise RuntimeError('A sessão foi interrompida sem custo final confiável.')
+            total=result.total_cost_usd
+            baseline=runtime.cost if runtime and runtime.resume==result.session_id else 0.0
+            if not isinstance(total,(float,int)) or not math.isfinite(total) or total<baseline-1e-8:
+                raise RuntimeError('O custo desta execução não pôde ser confirmado.')
+            call_cost=max(0.0,total-baseline)
+            if budget:
+                budget.calls+=1;budget.spent+=call_cost
+                usage=result.usage or {}
+                budget.input_tokens+=usage.get('input_tokens',0);budget.output_tokens+=usage.get('output_tokens',0)
+            accounted=True
         try:
-            with tempfile.TemporaryDirectory(prefix='ada-sdk-') as workspace:
+            with ExitStack() as stack:
+                if native and config.SDK_ORCHESTRATION=='native' and not active_review_schema.get():
+                    from .conversation_tools import chat_task
+                    from .repo import get_active_spec
+                    task=chat_task.get()
+                    if not task:raise RuntimeError('Conversa nativa não vinculada.')
+                    runtime=stack.enter_context(sdk_workspace.Workspace(task[0],task[1],get_active_spec(task[0])))
+                    workspace=str(runtime.path)
+                    env['CLAUDE_CONFIG_DIR']=stack.enter_context(tempfile.TemporaryDirectory(prefix='ada-sdk-config-'))
+                    env['MCP_TOOL_TIMEOUT']='660000'
+                    if runtime.resume:
+                        prompt=('Nova mensagem do usuário (a sessão anterior já contém o histórico): '+json.dumps(conversation[-1:],ensure_ascii=False))
+                        if active_images.get():
+                            resumed_text=prompt
+                            async def resumed_image_prompt():
+                                yield {'type':'user','message':{'role':'user','content':[{'type':'text','text':resumed_text}]+image_blocks},'parent_tool_use_id':None,'session_id':''}
+                            prompt=resumed_image_prompt()
+                else:workspace=stack.enter_context(tempfile.TemporaryDirectory(prefix='ada-sdk-'))
                 web = active_web_search.get()
                 mcp_config=active_mcp.get()
                 if mcp_config:
@@ -188,45 +227,72 @@ class ClaudeAgentGateway(ModelGateway):
                     async def tool_ceiling(data,tool_id,context):
                         nonlocal tool_count
                         tool_count+=1
-                        if tool_count>20:
+                        if tool_count>(config.SDK_TASK_MAX_TOOLS if runtime else 20):
                             return {'hookSpecificOutput':{'hookEventName':'PreToolUse','permissionDecision':'deny','permissionDecisionReason':'Limite de ferramentas desta execução atingido.'}}
                         if native:
                             from .db import connect
                             with connect() as c:row=c.execute('SELECT status FROM runs WHERE id=?',(native[0],)).fetchone()
                             if not row or row['status']!='running':
                                 return {'hookSpecificOutput':{'hookEventName':'PreToolUse','permissionDecision':'deny','permissionDecisionReason':'Execução cancelada.'}}
+                        if runtime:
+                            name=data.get('tool_name','')
+                            if not runtime.allowed(name,data.get('tool_input') or {}):
+                                return {'hookSpecificOutput':{'hookEventName':'PreToolUse','permissionDecision':'deny','permissionDecisionReason':'Ferramenta ou caminho fora da área de trabalho autorizada.'}}
+                            record_event(native[0],'tool_started',{'tool':str(name)[:120]})
+                            if name=='TodoWrite':record_event(native[0],'task_plan',{'todos':(data.get('tool_input') or {}).get('todos',[])[:30]})
                         return {}
                     hooks.setdefault('PreToolUse',[]).append(HookMatcher(matcher='.*',hooks=[tool_ceiling],on_failure='block'))
+                local_tools=['Read','Write','Edit','Glob','Grep','Skill','TodoWrite'] if runtime else []
+                if runtime and not (4<=config.SDK_TASK_MAX_TURNS<=200 and 10<=config.SDK_TASK_MAX_TOOLS<=500 and 60<=config.SDK_TASK_TIMEOUT_SECONDS<=3600):raise RuntimeError('Limites do runtime inválidos.')
                 options = ClaudeAgentOptions(model=config.MODEL_NAME, system_prompt=system,
-                    cwd=workspace, tools=(['Agent'] if definitions else [])+(['WebSearch'] if web else []), agents=definitions or None, allowed_tools=(['Agent'] if definitions else [])+(['WebSearch'] if web else [])+mcp_names, mcp_servers=mcp_servers, setting_sources=[],
-                    permission_mode='dontAsk', max_turns=12 if definitions else (4 if web or mcp_names else 1), max_budget_usd=call_budget,
-                    env=env, hooks=hooks, extra_args={'no-session-persistence': None})
+                    cwd=workspace, tools=(['Agent'] if definitions else [])+(['WebSearch'] if web else [])+local_tools, agents=definitions or None, allowed_tools=(['Agent'] if definitions else [])+(['WebSearch'] if web else [])+mcp_names+local_tools, mcp_servers=mcp_servers, setting_sources=['project'] if runtime else [],
+                    skills=['investigar','analisar-dados','construir-entrega'] if runtime else [],
+                    strict_mcp_config=True,
+                    disallowed_tools=['Bash','NotebookEdit','WebFetch','AskUserQuestion'] if runtime else [],
+                    permission_mode='dontAsk', max_turns=config.SDK_TASK_MAX_TURNS if runtime else (12 if definitions else (4 if web or mcp_names else 1)), max_budget_usd=call_budget,
+                    resume=runtime.resume if runtime else None,session_store=runtime.store if runtime else None,session_store_flush='eager',
+                    include_partial_messages=bool(runtime),env=env, hooks=hooks, extra_args={} if runtime else {'no-session-persistence': None})
                 timeout_seconds=max(config.SDK_TIMEOUT_SECONDS,1800) if mcp_config and 'mcp_codigo' in mcp_config[1] else config.SDK_TIMEOUT_SECONDS
+                if runtime:timeout_seconds=config.SDK_TASK_TIMEOUT_SECONDS
+                saw_delta=False
+                def observe(message):
+                    nonlocal result,saw_delta
+                    from claude_agent_sdk import AssistantMessage,StreamEvent,TextBlock,SystemMessage
+                    if isinstance(message,ResultMessage):result=message
+                    if not runtime:return
+                    if type(message).__name__=='MirrorErrorMessage':runtime.store.failed=True
+                    if isinstance(message,StreamEvent) and not message.parent_tool_use_id:
+                        event=message.event
+                        if event.get('type')=='content_block_delta' and event.get('delta',{}).get('type')=='text_delta':
+                            saw_delta=True;publish({'type':'text_delta','text':event['delta'].get('text','')})
+                    elif isinstance(message,AssistantMessage) and not saw_delta and not getattr(message,'parent_tool_use_id',None):
+                        for block in message.content:
+                            if isinstance(block,TextBlock):publish({'type':'text_delta','text':block.text})
+                    if isinstance(message,SystemMessage) and message.subtype in ('compact_boundary','init'):
+                        record_event(native[0],'context_compacted' if message.subtype=='compact_boundary' else 'sdk_session',{'resumed':bool(runtime.resume)})
                 async with asyncio.timeout(timeout_seconds):
                     if mcp_servers:
                         async with ClaudeSDKClient(options=options) as client:
                             await client.query(prompt)
                             async for message in client.receive_response():
-                                if isinstance(message, ResultMessage): result=message
+                                observe(message)
                     else:
                         async for message in query(prompt=prompt, options=options):
-                            if isinstance(message, ResultMessage): result = message
+                            observe(message)
+                account_result()
+                if runtime:
+                    if result is None or result.is_error or not (result.result or '').strip():raise RuntimeError('A sessão não concluiu a resposta.')
+                    runtime.save(result.session_id,result.total_cost_usd)
+                    record_event(native[0],'sdk_completed',{'turns':result.num_turns,'delegations':native_count,'tools':tool_count,'cost_usd':call_cost})
         except BaseException as exc:
+            try:account_result()
+            except RuntimeError:pass
             if budget is not None:
-                budget.reserved-=call_budget
-                budget.cost_known = False
+                if not accounted:budget.cost_known = False
             if isinstance(exc,asyncio.CancelledError):raise
             raise RuntimeError('Falha ao executar o Claude Agent SDK.') from exc
-        if budget:budget.reserved-=call_budget
-        if result is not None and budget is not None:
-            budget.calls += 1
-            if result.total_cost_usd is None:
-                budget.cost_known = False
-                raise RuntimeError('O custo da chamada não foi informado; tarefa interrompida.')
-            budget.spent += result.total_cost_usd
-            usage = result.usage or {}
-            budget.input_tokens += usage.get('input_tokens', 0)
-            budget.output_tokens += usage.get('output_tokens', 0)
+        finally:
+            if budget:budget.reserved-=call_budget
         if result is None and budget is not None: budget.cost_known = False
         if result is None or result.is_error:
             raise RuntimeError('O Claude Agent SDK não concluiu a resposta.')
@@ -234,7 +300,7 @@ class ClaudeAgentGateway(ModelGateway):
         if not text.strip(): raise RuntimeError('O Claude Agent SDK retornou resposta vazia.')
         usage = result.usage or {}
         return ModelResult(text, usage.get('input_tokens', 0), usage.get('output_tokens', 0),
-                           not bool(usage), result.total_cost_usd)
+                           not bool(usage), call_cost)
 
 def create_gateway():
     if config.MODEL_PROVIDER == 'claude_agent_sdk': return ClaudeAgentGateway()

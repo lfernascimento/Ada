@@ -78,7 +78,7 @@ def connect():
 def init_db():
     if DB_BACKEND == 'postgres':
         with connect() as c:
-            row = c.execute('SELECT version FROM schema_migrations WHERE version=?', (7,)).fetchone()
+            row = c.execute('SELECT version FROM schema_migrations WHERE version=?', (8,)).fetchone()
             if not row: raise RuntimeError('O esquema PostgreSQL da Ada ainda não foi preparado.')
         return
     with connect() as c:
@@ -103,6 +103,9 @@ def init_db():
         c.execute('CREATE TABLE IF NOT EXISTS conversation_summaries (conversation_id BIGINT PRIMARY KEY REFERENCES conversations(id), summary TEXT NOT NULL, last_message_id BIGINT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP);')
         c.executescript("CREATE TABLE IF NOT EXISTS workflows (id INTEGER PRIMARY KEY, agent_id BIGINT NOT NULL REFERENCES agents(id), active_version INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 0, interval_hours INTEGER NOT NULL DEFAULT 24, max_daily_runs INTEGER NOT NULL DEFAULT 1, next_at BIGINT NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'idle');\nCREATE TABLE IF NOT EXISTS workflow_versions (workflow_id BIGINT NOT NULL REFERENCES workflows(id), number INTEGER NOT NULL, name TEXT NOT NULL, objective TEXT NOT NULL, created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(workflow_id,number));\nCREATE TABLE IF NOT EXISTS workflow_runs (id INTEGER PRIMARY KEY, workflow_id BIGINT NOT NULL REFERENCES workflows(id), version INTEGER NOT NULL, conversation_id BIGINT REFERENCES conversations(id), status TEXT NOT NULL, result TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', created_at BIGINT NOT NULL);\n")
         c.execute("CREATE TABLE IF NOT EXISTS chat_attachments (id INTEGER PRIMARY KEY, conversation_id BIGINT NOT NULL REFERENCES conversations(id), message_id BIGINT REFERENCES messages(id), name TEXT NOT NULL, mime TEXT NOT NULL, data TEXT NOT NULL DEFAULT '', extracted TEXT NOT NULL DEFAULT '', created_at BIGINT NOT NULL);")
+        c.executescript("CREATE TABLE IF NOT EXISTS sdk_runtime_state (\n conversation_id BIGINT PRIMARY KEY REFERENCES conversations(id),\n fingerprint TEXT NOT NULL, session_id TEXT NOT NULL DEFAULT '', files_json TEXT NOT NULL DEFAULT '{}',\n sdk_cost_usd REAL NOT NULL DEFAULT 0\n);\nCREATE TABLE IF NOT EXISTS sdk_session_entries (\n conversation_id BIGINT NOT NULL REFERENCES conversations(id), project_key TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL,\n subpath TEXT NOT NULL, seq BIGINT NOT NULL, entry_uid TEXT NOT NULL, entry_json TEXT NOT NULL,\n PRIMARY KEY(conversation_id,project_key,session_id,subpath,seq), UNIQUE(conversation_id,project_key,session_id,subpath,entry_uid)\n);\n")
+        if 'sdk_cost_usd' not in {r['name'] for r in c.execute('PRAGMA table_info(sdk_runtime_state)')}:
+            c.execute('ALTER TABLE sdk_runtime_state ADD COLUMN sdk_cost_usd REAL NOT NULL DEFAULT 0')
         from .cookbooks import prepare_catalog
         prepare_catalog(c)
 

@@ -107,4 +107,8 @@ def build_mcp(agent_id:int, allowed:set[str]):
             except Exception:
                 return {'is_error':True,'content':[{'type':'text','text':'Não foi possível exportar. É necessário ter uma resposta anterior nesta conversa e escolher um formato disponível.'}]}
         tools.append(export_file);names.append('mcp__ada__gerar_arquivo')
+    if 'mcp_runtime' in allowed:
+        from .sdk_runtime_tools import runtime_tools
+        extra=runtime_tools(agent_id)
+        tools.extend(extra);names.extend('mcp__ada__'+t.name for t in extra)
     return ({'ada':create_sdk_mcp_server('ada',tools=tools)},names) if tools else ({},[])

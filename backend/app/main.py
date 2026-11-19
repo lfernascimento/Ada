@@ -34,6 +34,16 @@ async def lifespan(app):
     init_db()
     from .workflows import recover_interrupted
     recover_interrupted()
+    from .sdk_workspace import invalidate
+    with connect() as c:
+        interrupted=c.execute("SELECT id,conversation_id FROM runs WHERE status='running'").fetchall()
+        for row in interrupted:
+            c.execute("UPDATE runs SET status='failed',cost_estimate=NULL WHERE id=?",(row['id'],))
+            from .infrastructure import emit
+            emit(c,row['id'],'failed',{'reason':'Backend reiniciado durante a execução.','cost_usd':None})
+        c.execute("UPDATE review_schedules SET status='idle',enabled=0 WHERE status='running'")
+        c.execute("UPDATE repository_reviews SET status='failed',error='Backend reiniciado durante a execução.' WHERE status='running'")
+    for row in interrupted:invalidate(row['conversation_id'])
     workflow_scheduler=asyncio.create_task(workflow_loop())
     scheduler=asyncio.create_task(scheduler_loop())
     try:yield
@@ -74,6 +84,12 @@ from .workflows import router as workflows_router
 app.include_router(workflows_router)
 from .attachments import router as attachments_router
 app.include_router(attachments_router)
+from .sdk_workspace import router as sdk_workspace_router
+from .sdk_inputs import router as sdk_inputs_router
+from .runtime_stream import router as runtime_stream_router
+app.include_router(sdk_workspace_router)
+app.include_router(sdk_inputs_router)
+app.include_router(runtime_stream_router)
 gateway=create_gateway()
 def model_http_error(error:httpx.HTTPStatusError):
     if error.response.status_code==429:
@@ -186,6 +202,7 @@ def fork_conversation(agent_id:int,cid:int):
         for old,new in zip(rows,cloned):
             c.execute('INSERT INTO chat_attachments(conversation_id,message_id,name,mime,data,extracted,created_at) SELECT ?,?,name,mime,data,extracted,created_at FROM chat_attachments WHERE conversation_id=? AND message_id=?',(new_id,new['id'],cid,old['id']))
         c.execute('INSERT INTO conversation_labels(conversation_id,title) VALUES(?,?)',(new_id,'Cópia da conversa'))
+        c.execute("INSERT INTO sdk_runtime_state(conversation_id,fingerprint,session_id,files_json) SELECT ?,'','',files_json FROM sdk_runtime_state WHERE conversation_id=?",(new_id,cid))
     return {'id':new_id,'title':'Cópia da conversa'}
 
 @app.get('/agents/{agent_id}/conversations/{cid}/messages')
@@ -224,9 +241,20 @@ async def send_message(agent_id:int,cid:int,body:ChatRequest):
         token=active_budget.set(budget)
         from .conversation_tools import chat_artifacts
         artifacts_token=chat_artifacts.set([])
+        from .sdk_workspace import attachments as sdk_attachments,invalidate,Workspace
+        from .runtime_events import register,unregister
+        from .sdk_inputs import answered
+        answers=[];answers_token=answered.set(answers)
+        sdk_token=sdk_attachments.set(items)
+        register(run_id)
         try:
             from .conversation_context import build_context
-            previous=await build_context(gateway,agent_id,cid,body.content)
+            from . import config
+            with connect() as c:
+                resume=c.execute('SELECT session_id,fingerprint FROM sdk_runtime_state WHERE conversation_id=?',(cid,)).fetchone()
+                transcript=resume and c.execute("SELECT 1 FROM sdk_session_entries WHERE conversation_id=? AND session_id=? AND subpath='' LIMIT 1",(cid,resume['session_id'])).fetchone()
+            resumable=config.SDK_ORCHESTRATION=='native' and resume and transcript and resume['fingerprint']==Workspace(agent_id,cid,spec).fingerprint
+            previous=[] if resumable else await build_context(gateway,agent_id,cid,body.content)
             from .model_gateway import active_images
             active_images.set(images_for_conversation(cid,items))
             answer=await orchestrate(gateway,spec,previous,task_content,run_id)
@@ -240,11 +268,12 @@ async def send_message(agent_id:int,cid:int,body:ChatRequest):
                 begin_write(c)
                 state=c.execute('SELECT status FROM runs WHERE id=?',(run_id,)).fetchone()['status']
                 if state != 'running': raise RuntimeError('Execução cancelada.')
-                save_turn(c,cid,body.content,answer,items)
+                save_turn(c,cid,body.content,answer,items,answers)
                 c.execute("UPDATE runs SET status='completed',steps=?,tokens_in=?,tokens_out=?,cost_estimate=? WHERE id=?",(budget.calls,budget.input_tokens,budget.output_tokens,budget.spent if budget.cost_known else None,run_id))
                 emit(c,run_id,'completed',{'cost_usd':budget.spent,'calls':budget.calls})
-            return {'text':answer}
+            return {'text':answer,**({'interactions':answers} if answers else {})}
         except asyncio.CancelledError:
+            invalidate(cid)
             with connect() as c:
                 from .db import begin_write
                 begin_write(c)
@@ -252,8 +281,14 @@ async def send_message(agent_id:int,cid:int,body:ChatRequest):
                 if state and state['status']=='running':
                     c.execute("UPDATE runs SET status='cancelled',cost_estimate=NULL WHERE id=?",(run_id,))
                     emit(c,run_id,'cancelled',{'reason':'Execução interrompida; custo final pode ser desconhecido.'})
+            from .runtime_events import interrupted
+            if run_id in interrupted:
+                # Stop this invocation without cancelling its caller's scheduler loop.
+                asyncio.current_task().uncancel()
+                raise HTTPException(499,'Execução interrompida. O consumo já realizado pode ser cobrado.')
             raise
-        except (httpx.HTTPError,RuntimeError,StructuredOutputError,ValueError,KeyError) as e:
+        except Exception as e:
+            invalidate(cid)
             with connect() as c:
                 from .db import begin_write
                 begin_write(c)
@@ -264,6 +299,7 @@ async def send_message(agent_id:int,cid:int,body:ChatRequest):
                     emit(c,run_id,'failed',{'reason':'Não foi possível concluir a tarefa.','cost_usd':budget.spent if budget.cost_known else None})
             raise HTTPException(502,detail='Não foi possível concluir a tarefa. Confira a configuração, os dados disponíveis e o orçamento.')
         finally:
+            unregister(run_id);sdk_attachments.reset(sdk_token);answered.reset(answers_token)
             active_budget.reset(token);chat_artifacts.reset(artifacts_token)
     try:
         from .conversation_context import build_context
@@ -298,6 +334,8 @@ async def delete_conversation(agent_id:int,cid:int):
         if c.execute("SELECT 1 FROM workflow_runs WHERE conversation_id=? AND status='running'",(cid,)).fetchone():raise HTTPException(409,'Workflow em execução.')
         c.execute('DELETE FROM workflow_runs WHERE conversation_id=?',(cid,))
         c.execute('DELETE FROM conversation_summaries WHERE conversation_id=?',(cid,))
+        c.execute('DELETE FROM sdk_session_entries WHERE conversation_id=?',(cid,))
+        c.execute('DELETE FROM sdk_runtime_state WHERE conversation_id=?',(cid,))
         c.execute('DELETE FROM chat_attachments WHERE conversation_id=?',(cid,))
         c.execute('DELETE FROM messages WHERE conversation_id=?',(cid,))
         c.execute('DELETE FROM conversation_labels WHERE conversation_id=?',(cid,))
@@ -329,6 +367,8 @@ async def delete_agent(agent_id:int):
         c.execute('DELETE FROM agent_notes WHERE agent_id=?',(agent_id,))
         c.execute('DELETE FROM agent_memory_settings WHERE agent_id=?',(agent_id,))
         c.execute('DELETE FROM conversation_summaries WHERE conversation_id IN (SELECT id FROM conversations WHERE agent_id=?)',(agent_id,))
+        c.execute('DELETE FROM sdk_session_entries WHERE conversation_id IN (SELECT id FROM conversations WHERE agent_id=?)',(agent_id,))
+        c.execute('DELETE FROM sdk_runtime_state WHERE conversation_id IN (SELECT id FROM conversations WHERE agent_id=?)',(agent_id,))
         c.execute('DELETE FROM chat_attachments WHERE conversation_id IN (SELECT id FROM conversations WHERE agent_id=?)',(agent_id,))
         c.execute('DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE agent_id=?)',(agent_id,))
         c.execute('DELETE FROM conversation_labels WHERE conversation_id IN (SELECT id FROM conversations WHERE agent_id=?)',(agent_id,))

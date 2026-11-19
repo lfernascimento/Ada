@@ -2,11 +2,12 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {render,screen,fireEvent,waitFor,act,cleanup} from '@testing-library/react';
 import App from '../src/App';
+import RuntimeControls from '../src/RuntimeControls';
 const spec={name:'Teste',purpose:'Ajudar em tarefas.',instructions:[],tools:[],autonomy_policy:{},resources:{},limits:{max_steps:4},style:{color:'amber',avatar:'flower'}};
 function response(data:unknown,ok=true){return {ok,json:async()=>data} as Response}
 async function openAgent(){await act(async()=>{render(<App/>)});fireEvent.click(screen.getByRole('button',{name:'← Voltar',exact:true}));await screen.findByRole('heading',{name:'Teste',level:1})}
 function setup(){let complete:(r:Response)=>void=()=>{};let calls=0;
- globalThis.fetch=async(path:any,options:any={})=>{const url=String(path);if(url.endsWith('/messages')&&options.method==='POST'){calls++;return new Promise<Response>(resolve=>{complete=resolve})}
+ globalThis.fetch=async(path:any,options:any={})=>{const url=String(path);if(url.endsWith('/messages/stream')&&options.method==='POST'){calls++;return new Promise<Response>(resolve=>{complete=resolve})}
  if(url==='/api/agents')return response([{id:1,name:'Teste',avatar:'flower',color:'amber',active_version:1}]);
  if(url==='/api/agents/1')return response({id:1,active_version:1,spec});
  if(url.endsWith('/conversations')&&options.method==='POST')return response({id:1});
@@ -24,3 +25,17 @@ test('falha preserva o texto e reenvio não duplica a mensagem otimista',async()
  fireEvent.click(screen.getByRole('button',{name:'Enviar mensagem'}));await waitFor(()=>assert.equal(mock.calls(),2));assert.equal(screen.getAllByText('Tarefa para reenviar').length,1);
  await act(async()=>mock.finish());await screen.findByText('Resposta pronta.');assert.equal(screen.getAllByText('Tarefa para reenviar').length,1);
  }finally{cleanup()}});
+
+test('texto chega em partes e o botão interrompe a execução',async()=>{setup();const original=globalThis.fetch;let controller:ReadableStreamDefaultController<Uint8Array>|undefined;let stopped=false;
+ globalThis.fetch=async(path:any,options:any={})=>{const url=String(path);if(url.endsWith('/messages/stream'))return {ok:true,body:new ReadableStream<Uint8Array>({start(c){controller=c}})} as Response;
+ if(url==='/api/runs/9/cancel'){stopped=true;controller!.enqueue(new TextEncoder().encode(JSON.stringify({type:'cancelled'})+'\n'));controller!.close();return response({status:'cancelled'})}
+ return original(path,options)};
+ try{await openAgent();fireEvent.change(screen.getByLabelText('Sua mensagem'),{target:{value:'Tarefa longa'}});fireEvent.click(screen.getByRole('button',{name:'Enviar mensagem'}));await waitFor(()=>assert.ok(controller));
+ await act(async()=>controller!.enqueue(new TextEncoder().encode('{"type":"started","run_id":9}\n{"type":"text_delta","text":"Análise em andamento"}\n')));
+ await screen.findByText('Análise em andamento');fireEvent.click(screen.getByRole('button',{name:'Interromper tarefa'}));await screen.findByText(/Execução interrompida/);assert.ok(stopped);assert.equal((screen.getByLabelText('Sua mensagem') as HTMLTextAreaElement).value,'Tarefa longa');
+ }finally{cleanup()}});
+
+test('aprovação da sandbox exige uma escolha explícita no chat',async()=>{let decision:unknown;globalThis.fetch=async(path:any,options:any={})=>{
+ if(options.method==='POST'){decision=JSON.parse(options.body);return response({accepted:true})}
+ return response({run_id:9,requests:[{id:'approval',kind:'approval',question:'Executar código na sandbox?',detail:'print(1)'}]})};
+ try{render(<RuntimeControls agentId={1} cid={2} busy={false} onRun={()=>{}}/>);await screen.findByText('Executar código na sandbox?');assert.equal(decision,undefined);fireEvent.click(screen.getByRole('button',{name:'Recusar'}));await waitFor(()=>assert.deepEqual(decision,{approved:false}));assert.equal(screen.queryByText('Executar código na sandbox?'),null)}finally{cleanup()}});

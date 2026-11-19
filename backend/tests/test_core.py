@@ -13,6 +13,7 @@ def spec():
 def database(tmp_path,monkeypatch):
     from app import security,config
     monkeypatch.setattr(config,"MEMORY_AUTOMATIC",False)
+    monkeypatch.setattr(config,"SDK_ORCHESTRATION",'planned')  # Legacy planner regression coverage.
     monkeypatch.setattr(security,'TRUSTED_HOSTS',security.TRUSTED_HOSTS|{'testserver'})
     monkeypatch.setattr(security,'TRUSTED_PEERS',security.TRUSTED_PEERS|{'testclient'})
     monkeypatch.setattr(db,'DB_BACKEND','sqlite'); monkeypatch.setattr(db,'DB_PATH',tmp_path/'test.db'); db.init_db()

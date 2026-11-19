@@ -45,11 +45,11 @@ def database_check(values):
                               sslrootcert=values.get('SUPABASE_DB_CA_CERT') or '', connect_timeout=10) as conn:
             conn.execute('SET TRANSACTION READ ONLY')
             conn.execute("SET LOCAL statement_timeout = '10s'")
-            version = conn.execute(sql.SQL('SELECT version FROM {}.schema_migrations WHERE version=7').format(sql.Identifier(schema))).fetchone()
-            return {'check': 'Banco acessível com esquema 7 e TLS verificado', 'status': 'passed' if version else 'missing'}
+            version = conn.execute(sql.SQL('SELECT version FROM {}.schema_migrations WHERE version=8').format(sql.Identifier(schema))).fetchone()
+            return {'check': 'Banco acessível com esquema 8 e TLS verificado', 'status': 'passed' if version else 'missing'}
     except Exception:
         # Driver errors can include hostnames, usernames or connection strings.
-        return {'check': 'Banco acessível com esquema 7 e TLS verificado', 'status': 'missing'}
+        return {'check': 'Banco acessível com esquema 8 e TLS verificado', 'status': 'missing'}
 
 
 def main():

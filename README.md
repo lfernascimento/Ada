@@ -158,4 +158,6 @@ Anexos ficam vinculados à conversa e à mensagem; exclusão do chat/perfil os r
 
 ## Hospedagem privada inicial
 
+O runtime Claude agora integra sessões persistentes, skills confiáveis, coordenação dinâmica, arquivos por conversa, perguntas, aprovação de análise Python, streaming e interrupção. A API Anthropic continua sendo necessária para executar modelos Claude. Consulte [o funcionamento, limites e atualização do esquema](docs/RUNTIME_SDK.md).
+
 Dockerfile e render.yaml preparam frontend e backend no mesmo serviço, com autenticação HTTP Basic sobre HTTPS. É uma instalação privada para um proprietário: todas as pessoas que receberem a credencial compartilharão os dados. Não é autenticação multiusuário. Veja docs/DEPLOY_PRIVADO.md. O modo local continua disponível.

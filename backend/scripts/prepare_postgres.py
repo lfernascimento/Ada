@@ -28,6 +28,9 @@ def upgrade_current(conn,schema):
         cur.execute((ROOT/'backend'/'migrations'/'007_attachments.sql').read_text(encoding='utf-8-sig'),prepare=False)
         cur.execute('INSERT INTO schema_migrations(version) VALUES (7) ON CONFLICT DO NOTHING')
     with conn.cursor() as cur:
+        cur.execute((ROOT/'backend'/'migrations'/'008_sdk_runtime.sql').read_text(encoding='utf-8-sig'),prepare=False)
+        cur.execute('INSERT INTO schema_migrations(version) VALUES (8) ON CONFLICT DO NOTHING')
+    with conn.cursor() as cur:
         for table in ('conversation_labels','cookbook_references','cookbook_source_files'):
             cur.execute(sql.SQL('ALTER TABLE {} ENABLE ROW LEVEL SECURITY').format(sql.Identifier(table)))
         cur.execute('INSERT INTO schema_migrations(version) VALUES (3) ON CONFLICT DO NOTHING')

@@ -65,8 +65,9 @@ def images_for_conversation(cid,current):
     if not images:
         with connect() as c:images=[dict(r) for r in c.execute("SELECT mime,data FROM chat_attachments WHERE conversation_id=? AND message_id IS NOT NULL AND mime LIKE 'image/%' ORDER BY id DESC LIMIT 3",(cid,))]
     return [{'mime':x['mime'],'data':x['data']} for x in images]
-def save_turn(c,cid,user_text,answer,items):
+def save_turn(c,cid,user_text,answer,items,interactions=None):
     label='\n[Anexos: '+', '.join(x['name'] for x in items)+']' if items else ''
     mid=insert_id(c,"INSERT INTO messages(conversation_id,role,content) VALUES(?,'user',?)",(cid,user_text+label))
     for item in items:c.execute('UPDATE chat_attachments SET message_id=? WHERE id=? AND conversation_id=? AND message_id IS NULL',(mid,item['id'],cid))
+    for item in interactions or []:c.execute('INSERT INTO messages(conversation_id,role,content) VALUES(?,?,?)',(cid,item['role'],item['content']))
     c.execute("INSERT INTO messages(conversation_id,role,content) VALUES(?,'assistant',?)",(cid,answer))
