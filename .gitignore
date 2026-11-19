@@ -11,6 +11,7 @@ dist/
 .env.*
 !.env.example
 *.db-*
+*.langgraph*
 *.pem
 *.key
 *.crt

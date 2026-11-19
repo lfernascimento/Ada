@@ -1334,6 +1334,64 @@ def test_workflows_version_execution_and_profile_cleanup(spec,monkeypatch):
         assert client.delete(f'/agents/{aid}').status_code==200
         with db.connect() as c:assert c.execute('SELECT COUNT(*) FROM workflow_runs').fetchone()[0]==0
 
+def test_workflow_accepts_compatible_model_gateway(spec,monkeypatch):
+    from app import main
+    from fastapi.testclient import TestClient
+    monkeypatch.setattr(main,'gateway',FakeGateway(['Relatório concluído.']))
+    with TestClient(main.app) as client:
+        aid=client.post('/agents',json=spec.model_dump()).json()['id']
+        base=f'/agents/{aid}/workflows'
+        wid=client.post(base,json={'name':'Pesquisa','objective':'Analisar os dados disponíveis'}).json()['id']
+        response=client.post(f'{base}/{wid}/run')
+        assert response.status_code==200,response.text
+        assert response.json()['text']=='Relatório concluído.'
+        assert client.get(f'{base}/{wid}/runs').json()[0]['status']=='completed'
+
+@pytest.mark.parametrize('approved,expected',[(True,'completed'),(False,'rejected')])
+def test_workflow_review_survives_restart_and_never_repeats_model(spec,monkeypatch,approved,expected):
+    from app import main
+    from fastapi.testclient import TestClient
+    calls=[]
+    async def send(aid,cid,body):calls.append(body.content);return {'text':'Resultado para revisar.'}
+    monkeypatch.setattr(main,'send_message',send)
+    with TestClient(main.app) as client:
+        aid=client.post('/agents',json=spec.model_dump()).json()['id']
+        other=client.post('/agents',json=spec.model_dump()).json()['id']
+        base=f'/agents/{aid}/workflows'
+        wid=client.post(base,json={'name':'Análise','objective':'Analisar os dados fornecidos'}).json()['id']
+        response=client.post(f'{base}/{wid}/run?review=true')
+        assert response.status_code==200,response.text
+        run=response.json();assert run['status']=='waiting_review' and run['text']=='Resultado para revisar.'
+    with TestClient(main.app) as client:
+        rid=run['id'];path=f'{base}/{wid}/runs/{rid}/review'
+        assert client.get(f'{base}/{wid}/runs').json()[0]['status']=='waiting_review'
+        assert client.post(f'/agents/{other}/workflows/{wid}/runs/{rid}/review',json={'approved':approved}).status_code==404
+        response=client.post(path,json={'approved':approved})
+        assert response.status_code==200,response.text
+        assert response.json()['status']==expected and len(calls)==1
+        assert client.post(path,json={'approved':approved}).status_code==409
+        assert client.delete(f'{base}/{wid}').status_code==200
+    import sqlite3
+    with sqlite3.connect(str(db.DB_PATH)+'.langgraph') as c:
+        assert c.execute('SELECT count(*) FROM checkpoints WHERE thread_id=?',(f'ada-workflow-{rid}',)).fetchone()[0]==0
+
+def test_missing_checkpoint_never_replays_agent(spec,monkeypatch):
+    import sqlite3
+    from app import main
+    from fastapi.testclient import TestClient
+    calls=[]
+    async def send(*args):calls.append(1);return {'text':'Resultado.'}
+    monkeypatch.setattr(main,'send_message',send)
+    with TestClient(main.app) as client:
+        aid=client.post('/agents',json=spec.model_dump()).json()['id'];base=f'/agents/{aid}/workflows'
+        wid=client.post(base,json={'name':'Teste','objective':'Preparar uma resposta curta'}).json()['id']
+        rid=client.post(f'{base}/{wid}/run?review=true').json()['id']
+        with sqlite3.connect(str(db.DB_PATH)+'.langgraph') as c:
+            c.execute('DELETE FROM checkpoints WHERE thread_id=?',(f'ada-workflow-{rid}',))
+        response=client.post(f'{base}/{wid}/runs/{rid}/review',json={'approved':True})
+        assert response.status_code==502 and calls==[1]
+        assert client.get(f'{base}/{wid}/runs').json()[0]['status']=='failed'
+
 def test_workflow_failure_pauses_and_restart_recovery(spec,monkeypatch):
     from app import main,workflows
     from app.model_gateway import ClaudeAgentGateway

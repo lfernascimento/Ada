@@ -2,6 +2,8 @@
 
 Protótipo local para criar agentes especializados, conversar com eles, organizar contexto e acompanhar execuções. A orquestração pode usar especialistas temporários. O fluxo de código prepara alterações em repositórios públicos, executa verificações e permite criar um PR em rascunho após uma ação explícita do usuário.
 
+Documentação da plataforma: [relatório ilustrado em PDF](docs/Ada_Documentacao_da_Plataforma.pdf) e [versão em Markdown](docs/Ada_Documentacao_da_Plataforma.md), com visão, tese, funcionalidades, arquitetura e uso de IA no desenvolvimento.
+
 ## Instalação local
 
 Requisitos: Python 3.11+, Node.js ^20.19.0 ou >=22.12.0. Docker ou Multipass são opcionais para a execução de código. A chave de modelo e cada configuração OAuth pertencem ao usuário e ficam no `.env`, nunca no Git.
@@ -67,7 +69,7 @@ SQLite é o padrão local e recebe as tabelas novas automaticamente no reinício
 .\.venv\Scripts\python backend\scripts\prepare_postgres.py
 ```
 
-O comando prepara as migrações correntes, incluindo títulos, catálogo e memória. Não migra dados do SQLite. A aplicação exige versão 7 do esquema. Não execute scripts de migração sem backup de um banco de produção.
+O comando prepara as migrações correntes, incluindo títulos, catálogo, memória e sessões SDK. Não migra dados do SQLite. A aplicação exige versão 8 do esquema. Não execute scripts de migração sem backup de um banco de produção.
 
 ## Sandbox e PR
 
@@ -77,11 +79,11 @@ A execução tem comandos de verificação predefinidos, até duas tentativas de
 
 ## Proteção e limites
 
-Esta instalação é **local, de uma pessoa e um processo**. Toda a API valida host, endereço do cliente e origem, bloqueando sites externos. Não é autenticação multiusuário: outros processos locais pertencem ao mesmo limite de confiança. Não exponha o servidor em Render, túnel ou proxy público sem implementar autenticação e autorização. A sandbox é uma camada de isolamento e ainda exige testes adicionais para código hostil.
+A instalação admite modo local e hospedagem privada para um proprietário, com um worker. No modo local, a API valida host, endereço do cliente e origem. Na hospedagem privada, exige origem HTTPS e autenticação HTTP Basic; veja docs/DEPLOY_PRIVADO.md. Não é autenticação multiusuário: as pessoas com a mesma credencial compartilham os dados. A sandbox é uma camada de isolamento e ainda exige testes adicionais para código hostil.
 
-Apenas uma tarefa de modelo por vez é aceita pelo processo. Criação, conversa, sugestão e código recebem um orçamento por tarefa. Limites monetários do SDK são controles do provedor e não substituem o saldo/limite na Console. No provedor compatível, uma chave paga exige taxas explicitamente configuradas para estimativa; custo desconhecido impede novas chamadas na tarefa. Não há roteamento Haiku/Sonnet ainda.
+Apenas uma tarefa de modelo por vez é aceita pelo processo. Criação, conversa, sugestão e código recebem um orçamento por tarefa. Os tetos do SDK usam estimativas de consumo e não substituem o limite de cobrança da conta. No provedor compatível, as taxas configuradas permitem estimar o custo; custo desconhecido impede novas chamadas na tarefa. O SDK Claude admite modelos principal e leve; veja docs/MODELOS.md.
 
-GitHub, Figma e documentos Google estão disponíveis ao chat via MCP interno quando a conexão OAuth e os recursos do agente estão autorizados. O fluxo de código e a publicação de PR continuam separados das ferramentas de leitura. O deployment de nuvem e isolamento multiusuário ainda não foram implementados.
+GitHub, Figma e documentos Google estão disponíveis ao chat via MCP interno no motor Claude quando a conexão OAuth e os recursos do agente estão autorizados. O fluxo de código e a publicação de PR continuam separados das ferramentas de leitura. Há suporte a hospedagem privada no Render; isolamento multiusuário permanece fora da implementação atual.
 
 ## Verificação
 
@@ -99,7 +101,7 @@ Notas de desenvolvimento anteriores estão em `docs/NOTAS_HISTORICAS.md`; podem 
 
 Em Contexto → Recursos para o agente, autorize repositórios no formato `usuário/repositório` e IDs de arquivos Figma, Docs, Sheets e Drive. Salvar cria uma nova versão do agente. As ferramentas MCP usam os conectores da Ada e conferem a permissão ativa em cada chamada; não são os servidores MCP externos oficiais. Drive consulta metadados; Docs lê texto; Sheets lê A1:Z50; Figma devolve estrutura; GitHub lê arquivos públicos, árvore e resumos de CI. O CI não inclui o log completo. Desconectar o serviço impede consultas futuras.
 
-O modelo produz um plano e o coordenador chief of staff recebe AgentDefinition por especialista. A execução ocorre pela ferramenta nativa Agent do SDK, com restrição de ferramentas, turnos, orçamento e ganchos de auditoria. Não há acesso geral a Bash ou arquivos locais. Especialistas não recebem permissão de delegar. Invocações não planejadas e além do limite são bloqueadas. O teste com SDK simulado valida os contratos; execução real ainda exige chave e deve ser ensaiada antes da demo.
+No modo nativo, o coordenador decide durante a execução quando trabalhar diretamente, planejar ou chamar especialistas por AgentDefinition. A ferramenta Agent do SDK aplica as definições autorizadas, turnos, orçamento e ganchos de auditoria. As ferramentas de arquivo ficam restritas à área da conversa; não há Bash geral do servidor. Especialistas não recebem permissão de delegar novamente. O modo planned preserva o planejamento anterior como alternativa. Os testes com SDK simulado validam contratos; a execução com a API Anthropic ainda deve ser ensaiada.
 
 ### Observabilidade e reviewer
 
@@ -146,9 +148,13 @@ PostgreSQL/Supabase: execute backend/scripts/prepare_postgres.py antes de reinic
 
 ## Workflows salvos
 
-Contexto → Workflows permite criar, editar (gerando versão), executar e consultar histórico. O objetivo fica em linguagem natural; a orquestração Claude escolhe os passos e especialistas temporários. Salvar não consome modelo. O SDK pode salvar workflows pelo chat via salvar_workflow; executar e ativar recorrência continuam ações explícitas na interface.
+Contexto → Workflows permite criar, editar (gerando versão), executar e consultar histórico. O LangGraph coordena o marco de execução do agente e uma revisão opcional; o motor configurado é responsável pelo trabalho. Com Claude, o SDK pode escolher ferramentas e especialistas; no caminho compatível com Gemini a execução usa a conversa do provedor e ainda não oferece o mesmo conjunto de ferramentas. Salvar não consome modelo. O SDK pode salvar workflows pelo chat via salvar_workflow; executar e ativar recorrência continuam ações explícitas na interface.
 
-A recorrência é por intervalo em horas, começa desligada e tem limite de execuções em 24 horas, inclusive manuais. Executa no processo local/servidor enquanto ele estiver ativo. Cada tentativa cria uma conversa e registra versão, resultado ou falha. Falhas pausam recorrência; ocupação do executor adia sem consumir o limite diário. Após reinício, workflows interrompidos são marcados como falhos e pausados. Não há execução em múltiplos workers, retomada no meio de uma tarefa ou gatilhos por webhook ainda.
+A revisão opcional pausa depois da resposta, conservando o checkpoint no SQLite local ou no PostgreSQL. Após reiniciar, o usuário pode aprovar ou rejeitar no histórico sem repetir a chamada do modelo. A aprovação apenas encerra a revisão; ela não publica PR nem envia dados. Uma chamada em andamento durante uma falha não é automaticamente retomada. As perguntas do SDK durante a chamada mantêm a implementação existente em memória e não são esses checkpoints do grafo.
+
+A recorrência é por intervalo em horas, começa desligada e tem limite de execuções em 24 horas, inclusive manuais. Executa no processo local/servidor enquanto ele estiver ativo. Cada tentativa cria uma conversa e registra versão, resultado ou falha. Falhas pausam recorrência; ocupação do executor adia sem consumir o limite diário. Após reinício, chamadas em andamento são marcadas como falhas e pausadas. Não há execução em múltiplos workers ou gatilhos por webhook ainda.
+
+Veja a [ilustração da arquitetura](docs/arquitetura-ada.png). Com SQLite, faça backup do arquivo do banco e do arquivo adjacente `ada.db.langgraph`; não envie nenhum deles ao Git. No PostgreSQL, o checkpointer cria suas tabelas no esquema da Ada com RLS habilitada. O papel do banco precisa ter permissão para criar as tabelas e índices na primeira execução.
 
 ## Anexos na conversa
 

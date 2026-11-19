@@ -321,6 +321,13 @@ async def send_message(agent_id:int,cid:int,body:ChatRequest):
 @app.delete('/agents/{agent_id}/conversations/{cid}')
 @task_limited
 async def delete_conversation(agent_id:int,cid:int):
+    from .workflow_graph import delete_checkpoints
+    with connect() as c:
+        if not c.execute('SELECT 1 FROM conversations WHERE id=? AND agent_id=?',(cid,agent_id)).fetchone():raise HTTPException(404,'Conversa não encontrada.')
+        if c.execute("SELECT 1 FROM runs WHERE conversation_id=? AND status='running'",(cid,)).fetchone():raise HTTPException(409,'Aguarde o término da tarefa antes de excluir a conversa.')
+        if c.execute("SELECT 1 FROM workflow_runs WHERE conversation_id=? AND status IN ('running','resuming')",(cid,)).fetchone():raise HTTPException(409,'Workflow em execução.')
+        ids=[r['id'] for r in c.execute('SELECT id FROM workflow_runs WHERE conversation_id=?',(cid,)).fetchall()]
+    await delete_checkpoints(ids)
     with connect() as c:
         from .db import begin_write
         begin_write(c)
@@ -349,6 +356,14 @@ async def delete_conversation(agent_id:int,cid:int):
 @app.delete('/agents/{agent_id}')
 @task_limited
 async def delete_agent(agent_id:int):
+    from .workflow_graph import delete_checkpoints
+    with connect() as c:
+        if not c.execute('SELECT 1 FROM agents WHERE id=?',(agent_id,)).fetchone():raise HTTPException(404,'Agente não encontrado.')
+        if c.execute("SELECT 1 FROM runs WHERE agent_id=? AND status='running'",(agent_id,)).fetchone() or c.execute("SELECT 1 FROM review_schedules WHERE agent_id=? AND status='running'",(agent_id,)).fetchone():raise HTTPException(409,'Aguarde o término das tarefas deste agente.')
+        if c.execute("SELECT 1 FROM workflows WHERE agent_id=? AND status='running'",(agent_id,)).fetchone():raise HTTPException(409,'Workflow em execução.')
+        if c.execute("SELECT 1 FROM workflow_runs WHERE workflow_id IN (SELECT id FROM workflows WHERE agent_id=?) AND status IN ('running','resuming')",(agent_id,)).fetchone():raise HTTPException(409,'Workflow em execução.')
+        ids=[r['id'] for r in c.execute('SELECT id FROM workflow_runs WHERE workflow_id IN (SELECT id FROM workflows WHERE agent_id=?)',(agent_id,)).fetchall()]
+    await delete_checkpoints(ids)
     with connect() as c:
         from .db import begin_write
         begin_write(c)

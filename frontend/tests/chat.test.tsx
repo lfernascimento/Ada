@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {render,screen,fireEvent,waitFor,act,cleanup} from '@testing-library/react';
 import App from '../src/App';
 import RuntimeControls from '../src/RuntimeControls';
+import Workflows from '../src/Workflows';
 const spec={name:'Teste',purpose:'Ajudar em tarefas.',instructions:[],tools:[],autonomy_policy:{},resources:{},limits:{max_steps:4},style:{color:'amber',avatar:'flower'}};
 function response(data:unknown,ok=true){return {ok,json:async()=>data} as Response}
 async function openAgent(){await act(async()=>{render(<App/>)});fireEvent.click(screen.getByRole('button',{name:'← Voltar',exact:true}));await screen.findByRole('heading',{name:'Teste',level:1})}
@@ -39,3 +40,7 @@ test('aprovação da sandbox exige uma escolha explícita no chat',async()=>{let
  if(options.method==='POST'){decision=JSON.parse(options.body);return response({accepted:true})}
  return response({run_id:9,requests:[{id:'approval',kind:'approval',question:'Executar código na sandbox?',detail:'print(1)'}]})};
  try{render(<RuntimeControls agentId={1} cid={2} busy={false} onRun={()=>{}}/>);await screen.findByText('Executar código na sandbox?');assert.equal(decision,undefined);fireEvent.click(screen.getByRole('button',{name:'Recusar'}));await waitFor(()=>assert.deepEqual(decision,{approved:false}));assert.equal(screen.queryByText('Executar código na sandbox?'),null)}finally{cleanup()}});
+
+test('workflow permite pausar e aprovar o resultado',async()=>{let decision:any,runUrl='';const flow={id:7,name:'Pesquisa',objective:'Analisar dados',active_version:1,enabled:0,interval_hours:24,max_daily_runs:1,status:'idle'};
+ globalThis.fetch=async(path:any,options:any={})=>{const url=String(path);if(url.endsWith('/run?review=true')){runUrl=url;return response({id:4,status:'waiting_review',text:'Entrega preparada',conversation_id:3,version:1})}if(url.endsWith('/runs/4/review')){decision=JSON.parse(options.body);return response({status:'completed'})}return response([flow])};
+ try{render(<Workflows agentId={1} refreshKey={0} onOpen={()=>{}}/>);await screen.findByText('Pesquisa · v1');fireEvent.click(screen.getByLabelText('Pausar esta execução manual para revisão'));fireEvent.click(screen.getByRole('button',{name:'Executar · usa API'}));await screen.findByText(/Execução 4 · Aguardando revisão/);assert.ok(runUrl.endsWith('review=true'));fireEvent.click(screen.getByText(/Execução 4 · Aguardando revisão/));fireEvent.click(screen.getByRole('button',{name:'Aprovar resultado'}));await waitFor(()=>assert.deepEqual(decision,{approved:true}));await screen.findByText(/Execução 4 · Concluído/)}finally{cleanup()}});

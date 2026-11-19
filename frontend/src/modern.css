@@ -46,3 +46,4 @@ body{font-family:inherit}button,input,textarea,select{font-family:inherit}.logo,
 .runtime-question{margin:16px 0;padding:16px 18px;border:1px solid #d9d6cf;border-radius:12px;max-width:760px;background:#fffefa;font-size:14px}
 .runtime-question p{margin:0 0 12px}.runtime-question pre{max-height:220px;overflow:auto;font-size:12px;white-space:pre-wrap}.runtime-question textarea{display:block;width:100%;min-height:72px;margin:8px 0 12px;padding:10px;border:1px solid #d9d6cf;border-radius:8px;font:inherit;background:transparent}
 .runtime-question button{font-size:13px}.runtime-plan{font-size:13px;color:#625f59;margin:12px 0}.runtime-plan ol{padding-left:22px;max-width:760px}.runtime-plan li{margin:7px 0}.composer .stop-task{border-radius:50%;font-size:16px}
+.workflow-review-option{display:flex;align-items:center;gap:8px;margin:16px 0;color:#55524e;font-size:13px}

@@ -79,6 +79,23 @@ def test_native_one_loop_resume_store_files_and_incremental_cost(monkeypatch):
         assert client.get(f'/agents/{aid}/conversations/{cid}/workspace/files').status_code==404
         assert client.delete(f'/agents/{aid}').status_code==200
 
+def test_langgraph_workflow_runs_native_sdk_and_resumes_without_new_model_call(monkeypatch):
+    aid,cid=conversation()
+    async def respond(client,number):
+        await client.options.session_store.append({'project_key':'p','session_id':SID},[{'uuid':'entry','raw':True}])
+        yield result('Entrega do especialista.',.001)
+    calls=sdk(monkeypatch,respond)
+    with TestClient(main.app) as client:
+        base=f'/agents/{aid}/workflows'
+        wid=client.post(base,json={'name':'Pesquisa','objective':'Analisar um tema informado'}).json()['id']
+        response=client.post(f'{base}/{wid}/run?review=true')
+        assert response.status_code==200,response.text
+        run=response.json();assert run['status']=='waiting_review' and len(calls)==1
+    with TestClient(main.app) as client:
+        response=client.post(f'{base}/{wid}/runs/{run["id"]}/review',json={'approved':True})
+        assert response.status_code==200,response.text
+        assert response.json()['status']=='completed' and len(calls)==1
+
 def test_store_preserves_entries_deduplicates_and_scopes():
     from app.sdk_sessions import ConversationStore
     aid,cid=conversation();other,foreign=conversation()
