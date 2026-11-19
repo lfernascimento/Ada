@@ -34,7 +34,8 @@ async def private_cloud(request,call_next):
     parsed=urlsplit(origin)
     password=os.getenv('ADA_ACCESS_PASSWORD','')
     username=os.getenv('ADA_ACCESS_USER','ada')
-    if parsed.scheme!='https' or not parsed.hostname or parsed.path or parsed.query or parsed.fragment or parsed.username or len(password)<8 or os.getenv('ADA_DATABASE_BACKEND')!='postgres':
+    require_auth=os.getenv('ADA_REQUIRE_LOGIN','true').lower()!='false'
+    if parsed.scheme!='https' or not parsed.hostname or parsed.path or parsed.query or parsed.fragment or parsed.username or (require_auth and len(password)<8) or os.getenv('ADA_DATABASE_BACKEND')!='postgres':
         return JSONResponse({'detail':'Instalação privada ainda não configurada.'},status_code=503)
     if request.url.netloc!=parsed.netloc:return JSONResponse({'detail':'Host não autorizado.'},status_code=403)
     if request.url.path=='/health' and request.method=='GET':return JSONResponse({'status':'ok'})
@@ -44,7 +45,7 @@ async def private_cloud(request,call_next):
         supplied=base64.b64decode(value,validate=True).decode('utf-8')
         authenticated=scheme.lower()=='basic' and hmac.compare_digest(hashlib.sha256(supplied.encode()).digest(),hashlib.sha256((username+':'+password).encode()).digest())
     except (ValueError,UnicodeError):pass
-    if not authenticated:return JSONResponse({'detail':'Autenticação necessária.'},status_code=401,headers={'WWW-Authenticate':'Basic realm="Ada privada", charset="UTF-8"','Cache-Control':'no-store'})
+    if require_auth and not authenticated:return JSONResponse({'detail':'Autenticação necessária.'},status_code=401,headers={'WWW-Authenticate':'Basic realm="Ada privada", charset="UTF-8"','Cache-Control':'no-store'})
     supplied_origin=request.headers.get('origin')
     callback=(request.method=='GET' and re.fullmatch(r'/connections/(github|figma|drive)/callback',request.url.path) is not None and request.headers.get('sec-fetch-mode')=='navigate' and request.headers.get('sec-fetch-dest')=='document')
     if (supplied_origin and supplied_origin!=origin) or (request.headers.get('sec-fetch-site')=='cross-site' and not callback):return JSONResponse({'detail':'Origem não autorizada.'},status_code=403)

@@ -1481,6 +1481,28 @@ def test_private_cloud_auth_origin_and_api_prefix(spec,monkeypatch,password):
     with TestClient(main.app,base_url='https://ada.example') as client:assert client.get('/api/agents').status_code==503
 
 
+def test_cloud_demo_without_login_preserves_boundary(spec,monkeypatch):
+    from app import main
+    from fastapi.testclient import TestClient
+    monkeypatch.setenv('ADA_DEPLOYMENT_MODE','private_cloud')
+    monkeypatch.setenv('ADA_PUBLIC_ORIGIN','https://ada.example')
+    monkeypatch.setenv('ADA_DATABASE_BACKEND','postgres')
+    monkeypatch.setenv('ADA_REQUIRE_LOGIN','false')
+    monkeypatch.delenv('ADA_ACCESS_PASSWORD',raising=False)
+    with TestClient(main.app,base_url='https://ada.example') as client:
+        response=client.get('/api/agents')
+        assert response.status_code==200
+        assert 'www-authenticate' not in response.headers
+        assert response.headers['cache-control']=='no-store'
+        assert client.get('/api/connections').status_code==200
+        assert client.post('/api/agents',json=spec.model_dump()).status_code==200
+        assert client.get('/api/agents',headers={'Host':'other.example'}).status_code==403
+        assert client.get('/api/agents',headers={'Origin':'https://evil.example'}).status_code==403
+        assert client.get('/api/agents',headers={'Sec-Fetch-Site':'cross-site'}).status_code==403
+        monkeypatch.setenv('ADA_REQUIRE_LOGIN','true')
+        assert client.get('/api/agents').status_code==503
+
+
 def test_claude_image_uses_multimodal_prompt(monkeypatch):
     import claude_agent_sdk
     from claude_agent_sdk import ResultMessage

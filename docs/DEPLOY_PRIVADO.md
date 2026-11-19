@@ -5,7 +5,7 @@ A plataforma possui uma instalação privada no Render. Estas instruções tamb�
 1. Suba o código atualizado ao seu repositório, sem `.env`, banco local, certificados ou chaves.
 2. No Render, crie um serviço a partir de `render.yaml` ou um Web Service Docker apontado à raiz da Ada. O plano e a disponibilidade devem ser conferidos no painel antes de publicar.
 3. Configure `ADA_PUBLIC_ORIGIN` com a URL HTTPS exata do serviço, sem caminho, e `ADA_OAUTH_CALLBACK_BASE` com a mesma URL.
-4. Defina `ADA_ACCESS_USER` e uma senha de pelo menos 8 caracteres em `ADA_ACCESS_PASSWORD`. A navegação pedirá essa credencial; a API também exige autenticação. Não a coloque no Git.
+4. Para a demo sem login, defina `ADA_REQUIRE_LOGIN=false`. As variáveis `ADA_ACCESS_USER` e `ADA_ACCESS_PASSWORD` são ignoradas nesse modo e podem ser removidas. O ambiente e suas conexões são compartilhados entre visitantes. Para exigir login, use `ADA_REQUIRE_LOGIN=true` e configure usuário e senha de pelo menos 8 caracteres; não coloque a senha no Git.
 5. Configure `ADA_DATABASE_BACKEND=postgres`, `SUPABASE_DATABASE_URL` e faça upload do certificado CA como arquivo secreto `/etc/secrets/prod-ca-2021.crt`. A aplicação requer esquema versão 8; prepare o banco pelo script `backend/scripts/prepare_postgres.py`.
 6. Configure `ADA_MODEL_PROVIDER=claude_agent_sdk`, `MODEL_NAME` com o identificador disponível na sua conta, `MODEL_API_KEY`, orçamento e limites. A chave deve existir somente como segredo do servidor.
 7. Copie os IDs e segredos OAuth para as variáveis do serviço. Cadastre nos provedores os callbacks HTTPS exibidos pela Ada. Google usa `/connections/drive/callback`, GitHub `/connections/github/callback`, Figma `/connections/figma/callback`.
